@@ -27,68 +27,6 @@ func sample() *store.Activity {
 	}
 }
 
-func TestRecorderLinksKnownUser(t *testing.T) {
-	fake := storetest.New()
-	fake.AddUser("user-abc", 101, "alice")
-	fake.Projects["sos-academy/dojo"] = "project-xyz"
-
-	rec := NewRecorder(fake, quietLogger(), false)
-	if err := rec.Record(context.Background(), []*store.Activity{sample()}); err != nil {
-		t.Fatalf("Record() error: %v", err)
-	}
-
-	if fake.ActivityCount() != 1 {
-		t.Fatalf("recorded %d activities, want 1", fake.ActivityCount())
-	}
-	got := fake.Activities[0]
-	if got.UserID != "user-abc" {
-		t.Errorf("UserID = %q, want user-abc", got.UserID)
-	}
-	if got.Unlinked {
-		t.Error("a matched user must not be flagged unlinked")
-	}
-	if got.ProjectID != "project-xyz" {
-		t.Errorf("ProjectID = %q, want project-xyz", got.ProjectID)
-	}
-}
-
-// The common case at launch: nobody has linked their GitHub account yet. The
-// activity must still be recorded, flagged for later linking.
-func TestRecorderFlagsUnlinkedUser(t *testing.T) {
-	fake := storetest.New()
-	rec := NewRecorder(fake, quietLogger(), false)
-
-	if err := rec.Record(context.Background(), []*store.Activity{sample()}); err != nil {
-		t.Fatalf("Record() error: %v", err)
-	}
-
-	got := fake.Activities[0]
-	if !got.Unlinked {
-		t.Error("an unmatched user must be flagged unlinked")
-	}
-	if got.UserID != "" {
-		t.Errorf("UserID = %q, want empty", got.UserID)
-	}
-	// The GitHub identity must survive so a later job can link it.
-	if got.Actor.GithubID != 101 || got.Actor.Login != "alice" {
-		t.Errorf("GitHub identity lost: %+v", got.Actor)
-	}
-}
-
-func TestRecorderFallsBackToLoginMatch(t *testing.T) {
-	fake := storetest.New()
-	// A profile linked before the GitHub id was captured.
-	fake.UsersByLogin["alice"] = &store.PlatformUser{ID: "user-abc", GithubLogin: "alice"}
-
-	rec := NewRecorder(fake, quietLogger(), false)
-	if err := rec.Record(context.Background(), []*store.Activity{sample()}); err != nil {
-		t.Fatal(err)
-	}
-	if fake.Activities[0].UserID != "user-abc" {
-		t.Errorf("login fallback did not resolve: %+v", fake.Activities[0])
-	}
-}
-
 // A redelivered event must not create a second row, and must not look like a
 // failure to the caller.
 func TestRecorderIsIdempotent(t *testing.T) {
@@ -105,26 +43,8 @@ func TestRecorderIsIdempotent(t *testing.T) {
 	}
 }
 
-// Losing the identity lookup must not lose the activity.
-func TestRecorderRecordsWhenEnrichmentFails(t *testing.T) {
-	fake := storetest.New()
-	failing := &failEnrich{Fake: fake}
-
-	rec := NewRecorder(failing, quietLogger(), false)
-	if err := rec.Record(context.Background(), []*store.Activity{sample()}); err != nil {
-		t.Fatalf("Record() error: %v", err)
-	}
-	if fake.ActivityCount() != 1 {
-		t.Fatal("activity lost when enrichment failed")
-	}
-	if !fake.Activities[0].Unlinked {
-		t.Error("a failed lookup must leave the activity unlinked")
-	}
-}
-
 func TestRecorderDryRunWritesNothing(t *testing.T) {
 	fake := storetest.New()
-	fake.AddUser("user-abc", 101, "alice")
 
 	rec := NewRecorder(fake, quietLogger(), true)
 	if err := rec.Record(context.Background(), []*store.Activity{sample()}); err != nil {
@@ -132,6 +52,9 @@ func TestRecorderDryRunWritesNothing(t *testing.T) {
 	}
 	if fake.ActivityCount() != 0 {
 		t.Fatalf("dry run wrote %d activities, want 0", fake.ActivityCount())
+	}
+	if len(fake.Outbound) != 0 {
+		t.Fatalf("dry run queued %d events, want 0", len(fake.Outbound))
 	}
 }
 
@@ -152,11 +75,76 @@ func TestRecorderHandlesNilStore(t *testing.T) {
 	}
 }
 
-// failEnrich fails only the lookups, so writes still succeed.
-type failEnrich struct {
-	*storetest.Fake
+// Every recorded activity must be queued for delivery: the webhook is the only
+// way anything outside Shuriken learns about it.
+func TestRecorderEnqueuesForDelivery(t *testing.T) {
+	fake := storetest.New()
+	rec := NewRecorder(fake, quietLogger(), false)
+
+	if err := rec.Record(context.Background(), []*store.Activity{sample()}); err != nil {
+		t.Fatalf("Record() error: %v", err)
+	}
+
+	if len(fake.Outbound) != 1 {
+		t.Fatalf("queued %d events, want 1", len(fake.Outbound))
+	}
+	e := fake.Outbound[0]
+	if e.Type != store.EventActivityRecorded {
+		t.Errorf("Type = %q, want %q", e.Type, store.EventActivityRecorded)
+	}
+	// Reusing the activity's dedupe key means a redelivery cannot double-send.
+	if e.IdempotencyKey != "pr_opened:6001" {
+		t.Errorf("IdempotencyKey = %q, want the activity dedupe key", e.IdempotencyKey)
+	}
+	if len(e.Payload) == 0 {
+		t.Error("event payload is empty")
+	}
 }
 
-func (f *failEnrich) FindPlatformUser(context.Context, int64, string) (*store.PlatformUser, error) {
-	return nil, errors.New("lookup unavailable")
+// A redelivery must not queue a second event.
+func TestRecorderEnqueueIsIdempotent(t *testing.T) {
+	fake := storetest.New()
+	rec := NewRecorder(fake, quietLogger(), false)
+
+	for i := 0; i < 3; i++ {
+		if err := rec.Record(context.Background(), []*store.Activity{sample()}); err != nil {
+			t.Fatalf("attempt %d: %v", i, err)
+		}
+	}
+	if fake.ActivityCount() != 1 {
+		t.Errorf("recorded %d activities, want 1", fake.ActivityCount())
+	}
+	if len(fake.Outbound) != 1 {
+		t.Errorf("queued %d events, want 1", len(fake.Outbound))
+	}
+}
+
+// An event queued for an activity that was never stored would be a lie, so a
+// failed write must not enqueue.
+func TestRecorderDoesNotEnqueueWhenWriteFails(t *testing.T) {
+	fake := storetest.New()
+	fake.Err = errors.New("mongo is down")
+
+	rec := NewRecorder(fake, quietLogger(), false)
+	if err := rec.Record(context.Background(), []*store.Activity{sample()}); err == nil {
+		t.Fatal("a write failure must be reported so the delivery is retried")
+	}
+	if len(fake.Outbound) != 0 {
+		t.Errorf("queued %d events despite the write failing", len(fake.Outbound))
+	}
+}
+
+// Shuriken records the GitHub actor and nothing else: no platform identity is
+// resolved or stored.
+func TestRecorderStoresGitHubIdentityOnly(t *testing.T) {
+	fake := storetest.New()
+	rec := NewRecorder(fake, quietLogger(), false)
+
+	if err := rec.Record(context.Background(), []*store.Activity{sample()}); err != nil {
+		t.Fatal(err)
+	}
+	got := fake.Activities[0]
+	if got.Actor.GithubID != 101 || got.Actor.Login != "alice" {
+		t.Errorf("GitHub identity not preserved: %+v", got.Actor)
+	}
 }

@@ -90,11 +90,20 @@ type Config struct {
 	PriceCacheReadPerMTok  float64
 	PriceCacheWritePerMTok float64
 
-	// Storage
+	// Storage. This is Shuriken's own database, not a consumer's.
 	MongoURI      Secret
 	MongoDatabase string
 	DeliveryTTL   time.Duration
 	EnsureIndexes bool
+
+	// Outbound delivery. Empty ConsumerURL disables publishing, which is the
+	// valid state for a deployment nobody is consuming yet.
+	ConsumerURL        string
+	ConsumerSecret     Secret
+	PublishInterval    time.Duration
+	PublishBatch       int
+	PublishMaxAttempts int
+	PublishTimeout     time.Duration
 
 	// Runtime
 	QueueSize  int
@@ -133,8 +142,10 @@ func Load() (*Config, error) {
 		PriceCacheReadPerMTok:  envFloat("SHURIKEN_PRICE_CACHE_READ_PER_MTOK", 0.20),
 		PriceCacheWritePerMTok: envFloat("SHURIKEN_PRICE_CACHE_WRITE_PER_MTOK", 5.00),
 
-		MongoURI:      Secret(env("SHURIKEN_MONGODB_URI", "")),
-		MongoDatabase: env("SHURIKEN_MONGODB_DATABASE", "sos-academy"),
+		MongoURI: Secret(env("SHURIKEN_MONGODB_URI", "")),
+		// Shuriken's own database. It must not be a consumer's database:
+		// Shuriken holds no credential for anyone else's data.
+		MongoDatabase: env("SHURIKEN_MONGODB_DATABASE", "shuriken"),
 		DeliveryTTL:   time.Duration(envInt("SHURIKEN_DELIVERY_TTL_DAYS", 30)) * 24 * time.Hour,
 		EnsureIndexes: envBool("SHURIKEN_ENSURE_INDEXES", false),
 
@@ -143,6 +154,13 @@ func Load() (*Config, error) {
 		JobTimeout: envDuration("SHURIKEN_JOB_TIMEOUT", 5*time.Minute),
 		DryRun:     envBool("SHURIKEN_DRY_RUN", false),
 		LogLevel:   strings.ToLower(env("SHURIKEN_LOG_LEVEL", "info")),
+
+		ConsumerURL:        strings.TrimSpace(env("SHURIKEN_CONSUMER_WEBHOOK_URL", "")),
+		ConsumerSecret:     Secret(env("SHURIKEN_CONSUMER_WEBHOOK_SECRET", "")),
+		PublishInterval:    envDuration("SHURIKEN_PUBLISH_INTERVAL", 10*time.Second),
+		PublishBatch:       envInt("SHURIKEN_PUBLISH_BATCH", 50),
+		PublishMaxAttempts: envInt("SHURIKEN_PUBLISH_MAX_ATTEMPTS", 8),
+		PublishTimeout:     envDuration("SHURIKEN_PUBLISH_TIMEOUT", 15*time.Second),
 	}
 
 	if raw := env("SHURIKEN_GITHUB_APP_ID", ""); raw != "" {
@@ -202,6 +220,17 @@ func (c *Config) validate() error {
 		}
 	}
 
+	// A consumer endpoint without a secret would publish unauthenticated
+	// events, which the consumer has no way to trust.
+	if c.ConsumerURL != "" {
+		if c.ConsumerSecret.Empty() {
+			errs = append(errs, errors.New("SHURIKEN_CONSUMER_WEBHOOK_SECRET is required when SHURIKEN_CONSUMER_WEBHOOK_URL is set"))
+		}
+		if !strings.HasPrefix(c.ConsumerURL, "https://") && !strings.HasPrefix(c.ConsumerURL, "http://") {
+			errs = append(errs, fmt.Errorf("SHURIKEN_CONSUMER_WEBHOOK_URL must be an http(s) URL, got %q", c.ConsumerURL))
+		}
+	}
+
 	if !validSeverity(c.MinSeverity) {
 		errs = append(errs, fmt.Errorf("SHURIKEN_MIN_SEVERITY must be high, medium or low, got %q", c.MinSeverity))
 	}
@@ -217,6 +246,8 @@ func (c *Config) validate() error {
 		{"SHURIKEN_MAX_TOOL_CALLS", c.MaxToolCalls},
 		{"SHURIKEN_MAX_DIFF_BYTES", c.MaxDiffBytes},
 		{"SHURIKEN_MAX_INLINE_COMMENTS", c.MaxInlineComments},
+		{"SHURIKEN_PUBLISH_BATCH", c.PublishBatch},
+		{"SHURIKEN_PUBLISH_MAX_ATTEMPTS", c.PublishMaxAttempts},
 	} {
 		if chk.val <= 0 {
 			errs = append(errs, fmt.Errorf("%s must be > 0, got %d", chk.name, chk.val))

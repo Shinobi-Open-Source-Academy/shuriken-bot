@@ -1,11 +1,13 @@
 package webhook
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"time"
 
 	gh "github.com/google/go-github/v92/github"
 
@@ -63,11 +65,25 @@ func (h *Handler) Routes() *http.ServeMux {
 	return mux
 }
 
-func (h *Handler) handleHealth(w http.ResponseWriter, _ *http.Request) {
+func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {
+	// Outbox depth is the operational signal that matters most here: a rising
+	// dead-letter count means a consumer has stopped accepting events and
+	// nobody is learning what Shuriken recorded.
+	var pending, dead int64
+	if h.store != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if p, d, err := h.store.OutboxDepth(ctx); err == nil {
+			pending, dead = p, d
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	// A failed write to an already-committed response cannot be recovered from.
-	_, _ = fmt.Fprintf(w, `{"status":"ok","queueDepth":%d,"dryRun":%t}`+"\n", h.pool.Depth(), h.dryRun)
+	_, _ = fmt.Fprintf(w,
+		`{"status":"ok","queueDepth":%d,"outboxPending":%d,"outboxDeadLettered":%d,"dryRun":%t}`+"\n",
+		h.pool.Depth(), pending, dead, h.dryRun)
 }
 
 func (h *Handler) handleWebhook(w http.ResponseWriter, r *http.Request) {

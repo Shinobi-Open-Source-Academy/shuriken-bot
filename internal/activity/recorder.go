@@ -5,11 +5,11 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/sos-academy/shuriken/internal/publisher"
 	"github.com/sos-academy/shuriken/internal/store"
 )
 
-// Recorder enriches normalized activities with platform identities and
-// persists them.
+// Recorder persists normalized activities and queues them for delivery.
 type Recorder struct {
 	store  store.Store
 	log    *slog.Logger
@@ -22,35 +22,45 @@ func NewRecorder(s store.Store, log *slog.Logger, dryRun bool) *Recorder {
 	return &Recorder{store: s, log: log, dryRun: dryRun}
 }
 
-// Record resolves the academy platform user and project for each activity and
-// stores it.
+// Record stores each activity and enqueues an outbound event for it.
 //
-// An activity whose GitHub user has no platform account is still recorded, under
-// the GitHub login, with Unlinked set. Shuriken never creates platform
-// accounts, so the alternative would be losing the contribution entirely.
+// There is no identity resolution step. Shuriken records the GitHub actor and
+// nothing else; mapping that to an account is the consumer's job, done at read
+// time against its own records. That is what lets one deployment serve
+// several projects, and it means Shuriken holds no credential for anyone
+// else's user data.
+//
+// The write and the enqueue are deliberately ordered: an activity that is
+// stored but not yet queued is recoverable, whereas an event queued for
+// something that was never stored is a lie. A duplicate activity still
+// re-enqueues, which is safe because the outbox is keyed on the same dedupe
+// key and ignores repeats.
 func (r *Recorder) Record(ctx context.Context, activities []*store.Activity) error {
 	var errs []error
-	for _, a := range activities {
-		if err := r.enrich(ctx, a); err != nil {
-			// Enrichment is best effort: a failed lookup must not lose the
-			// activity, it just stays unlinked.
-			r.log.WarnContext(ctx, "activity enrichment failed, recording unlinked",
-				slog.String("dedupeKey", a.DedupeKey), slog.Any("error", err))
-			a.Unlinked = true
-		}
 
+	for _, a := range activities {
 		if r.dryRun {
 			r.log.InfoContext(ctx, "DRY RUN would record activity",
 				slog.String("type", string(a.Type)),
 				slog.String("dedupeKey", a.DedupeKey),
 				slog.String("actor", a.Actor.Login),
+				slog.Int64("actorGithubId", a.Actor.GithubID),
 				slog.String("repo", a.Repo.FullName),
 				slog.String("url", a.Subject.URL),
-				slog.Bool("unlinked", a.Unlinked),
-				slog.String("platformUserId", a.UserID),
-				slog.String("projectId", a.ProjectID),
-				slog.Time("occurredAt", a.OccurredAt),
-			)
+				slog.Time("occurredAt", a.OccurredAt))
+
+			// Show the exact event a consumer would receive. This works with
+			// no database configured, which is what makes dry run useful to
+			// someone implementing the consumer side.
+			if event, err := publisher.ActivityEvent(a); err == nil {
+				r.log.InfoContext(ctx, "DRY RUN would publish event",
+					slog.String("eventType", event.Type),
+					slog.String("idempotencyKey", event.IdempotencyKey),
+					slog.String("payload", string(event.Payload)))
+			}
+			continue
+		}
+		if r.store == nil {
 			continue
 		}
 
@@ -59,42 +69,30 @@ func (r *Recorder) Record(ctx context.Context, activities []*store.Activity) err
 			r.log.InfoContext(ctx, "activity recorded",
 				slog.String("type", string(a.Type)),
 				slog.String("dedupeKey", a.DedupeKey),
-				slog.String("actor", a.Actor.Login),
-				slog.Bool("unlinked", a.Unlinked))
+				slog.String("actor", a.Actor.Login))
 		case errors.Is(err, store.ErrDuplicate):
-			// A redelivery, or the same logical event arriving twice. Already
-			// recorded, so this is success.
+			// A redelivery, or the same logical event twice. Already recorded,
+			// so this is success.
 			r.log.DebugContext(ctx, "activity already recorded",
 				slog.String("dedupeKey", a.DedupeKey))
 		default:
 			errs = append(errs, err)
+			// Do not queue an event for something that failed to store.
+			continue
+		}
+
+		if err := r.enqueue(ctx, a); err != nil {
+			errs = append(errs, err)
 		}
 	}
+
 	return errors.Join(errs...)
 }
 
-func (r *Recorder) enrich(ctx context.Context, a *store.Activity) error {
-	a.Unlinked = true
-
-	if r.store == nil {
-		return nil
-	}
-
-	user, err := r.store.FindPlatformUser(ctx, a.Actor.GithubID, a.Actor.Login)
+func (r *Recorder) enqueue(ctx context.Context, a *store.Activity) error {
+	event, err := publisher.ActivityEvent(a)
 	if err != nil {
 		return err
 	}
-	if user != nil {
-		a.UserID = user.ID
-		a.Unlinked = false
-	}
-
-	if a.Repo.FullName != "" {
-		projectID, err := r.store.ProjectIDForRepo(ctx, a.Repo.FullName)
-		if err != nil {
-			return err
-		}
-		a.ProjectID = projectID
-	}
-	return nil
+	return r.store.Enqueue(ctx, []*store.Outbound{event})
 }

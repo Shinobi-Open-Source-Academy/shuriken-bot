@@ -2,6 +2,7 @@ package review
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -12,6 +13,7 @@ import (
 	"github.com/sos-academy/shuriken/internal/diff"
 	ghc "github.com/sos-academy/shuriken/internal/github"
 	"github.com/sos-academy/shuriken/internal/llm"
+	"github.com/sos-academy/shuriken/internal/publisher"
 	"github.com/sos-academy/shuriken/internal/store"
 	"github.com/sos-academy/shuriken/internal/store/storetest"
 )
@@ -168,7 +170,6 @@ func TestRunPostsOneCommentReview(t *testing.T) {
 		}},
 	}}
 	fake := storetest.New()
-	fake.AddUser("user-abc", 101, "alice")
 
 	if err := newService(t, gh, model, fake).Run(context.Background(), okJob()); err != nil {
 		t.Fatalf("Run() error: %v", err)
@@ -200,9 +201,6 @@ func TestRunPostsOneCommentReview(t *testing.T) {
 	}
 	if f.Severity != store.SeverityHigh {
 		t.Errorf("Severity = %q", f.Severity)
-	}
-	if f.UserID != "user-abc" || f.Unlinked {
-		t.Errorf("finding not linked to the platform user: %+v", f)
 	}
 	if f.ReviewID != 555 {
 		t.Errorf("ReviewID = %d, want 555", f.ReviewID)
@@ -566,5 +564,131 @@ func TestRunPromptIsolatesUntrustedContent(t *testing.T) {
 	// A first-time contributor gets the warm register.
 	if !strings.Contains(req.UserContent, "first contribution") {
 		t.Error("the newcomer tier guidance is missing")
+	}
+}
+
+// Posted findings must be queued for delivery, carrying the concept and
+// severity that make recurring-feedback tracking possible downstream.
+func TestRunEnqueuesPostedFindings(t *testing.T) {
+	gh := &fakeGitHub{
+		pr:    okPR(),
+		files: []diff.File{{Path: "main.go", Patch: servicePatch}},
+	}
+	model := &fakeModel{out: llm.ReviewOutput{
+		Summary: "One issue.",
+		Findings: []llm.Finding{{
+			Path: "main.go", Line: 2, Side: "RIGHT", Severity: "high", Confidence: 0.95,
+			Title: "Unchecked error", Explanation: "why", Concept: "error handling",
+		}},
+	}}
+	fake := storetest.New()
+
+	if err := newService(t, gh, model, fake).Run(context.Background(), okJob()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	if len(fake.Outbound) != 1 {
+		t.Fatalf("queued %d events, want 1", len(fake.Outbound))
+	}
+	e := fake.Outbound[0]
+	if e.Type != store.EventFindingPosted {
+		t.Errorf("Type = %q, want %q", e.Type, store.EventFindingPosted)
+	}
+
+	var payload publisher.FindingPayload
+	if err := json.Unmarshal(e.Payload, &payload); err != nil {
+		t.Fatalf("payload is not valid JSON: %v", err)
+	}
+	if payload.Concept != "error handling" {
+		t.Errorf("Concept = %q", payload.Concept)
+	}
+	if payload.Severity != store.SeverityHigh {
+		t.Errorf("Severity = %q", payload.Severity)
+	}
+	if payload.Actor.GithubID != 101 {
+		t.Errorf("Actor.GithubID = %d, want the PR author's", payload.Actor.GithubID)
+	}
+}
+
+// Only posted findings are delivered. A dropped finding was never shown to the
+// contributor, so reporting it downstream would misrepresent the review.
+func TestRunDoesNotEnqueueDroppedFindings(t *testing.T) {
+	gh := &fakeGitHub{
+		pr:    okPR(),
+		files: []diff.File{{Path: "main.go", Patch: servicePatch}},
+	}
+	model := &fakeModel{out: llm.ReviewOutput{
+		Summary: "Notes.",
+		Findings: []llm.Finding{
+			{Path: "main.go", Line: 2, Side: "RIGHT", Severity: "high", Confidence: 0.9,
+				Title: "real", Explanation: "x", Concept: "error handling"},
+			// Unanchorable: dropped before posting.
+			{Path: "never-touched.go", Line: 400, Side: "RIGHT", Severity: "high", Confidence: 0.9,
+				Title: "hallucinated", Explanation: "x", Concept: "made up"},
+		},
+	}}
+	fake := storetest.New()
+
+	if err := newService(t, gh, model, fake).Run(context.Background(), okJob()); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.Outbound) != 1 {
+		t.Fatalf("queued %d events, want only the posted finding", len(fake.Outbound))
+	}
+}
+
+// The outbound payload must carry no platform identity.
+func TestFindingPayloadCarriesNoPlatformIdentity(t *testing.T) {
+	gh := &fakeGitHub{
+		pr:    okPR(),
+		files: []diff.File{{Path: "main.go", Patch: servicePatch}},
+	}
+	model := &fakeModel{out: llm.ReviewOutput{
+		Findings: []llm.Finding{{
+			Path: "main.go", Line: 2, Side: "RIGHT", Severity: "low", Confidence: 0.9,
+			Title: "t", Explanation: "e", Concept: "naming",
+		}},
+	}}
+	fake := storetest.New()
+	if err := newService(t, gh, model, fake).Run(context.Background(), okJob()); err != nil {
+		t.Fatal(err)
+	}
+
+	var generic map[string]any
+	if err := json.Unmarshal(fake.Outbound[0].Payload, &generic); err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"userId", "user", "unlinked"} {
+		if _, present := generic[forbidden]; present {
+			t.Errorf("payload leaked %q: %v", forbidden, generic)
+		}
+	}
+}
+
+func TestDryRunEnqueuesNothing(t *testing.T) {
+	gh := &fakeGitHub{
+		pr:    okPR(),
+		files: []diff.File{{Path: "main.go", Patch: servicePatch}},
+	}
+	model := &fakeModel{out: llm.ReviewOutput{
+		Findings: []llm.Finding{{
+			Path: "main.go", Line: 2, Side: "RIGHT", Severity: "high", Confidence: 0.9,
+			Title: "t", Explanation: "e", Concept: "error handling",
+		}},
+	}}
+	fake := storetest.New()
+	svc := NewService(
+		fixedClients{gh}, model, fake,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Options{
+			BotHandle: "shuriken-bot", MaxDiffBytes: 100_000, MaxInlineComments: 10,
+			MinConfidence: 0.6, MinSeverity: store.SeverityLow, DryRun: true,
+		},
+	)
+	if err := svc.Run(context.Background(), okJob()); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.Outbound) != 0 {
+		t.Errorf("dry run queued %d events, want 0", len(fake.Outbound))
 	}
 }
