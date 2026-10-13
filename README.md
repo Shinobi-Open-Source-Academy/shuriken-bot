@@ -32,6 +32,7 @@ Kunai and Kunai does not call it. The data is stored so Kunai can read it later
 - [Security model](#security-model)
 - [Tuning review quality](#tuning-review-quality)
 - [Architecture](#architecture)
+- [Architecture decisions](#architecture-decisions)
 - [Development](#development)
 - [Operations](#operations)
 
@@ -479,6 +480,15 @@ error. Errors stored on a review run are scrubbed again before the write.
 
 ### Residual risks, stated plainly
 
+- **Shuriken's database credential can read password hashes.** `migrations/004`
+  grants `find` on the whole `users` collection, and MongoDB has no field-level
+  permissions. Mongoose's `select: false` on `password` and `inviteToken` is an
+  application-layer default that the Go driver ignores, so a raw query returns
+  the bcrypt hash. Shuriken has no code path that reads those fields, but the
+  grant allows it. **Fix proposed in
+  [ADR 0003](docs/adr/0003-least-privilege-identity-reads.md)** — a projected
+  read-only view, one migration. Until that is accepted and run, treat
+  Shuriken's database credential with the same care as a platform credential.
 - **`author_association` as a permission proxy.** `COLLABORATOR` means "has
   been added as a collaborator", which in rare configurations can mean read-only
   access. The practical consequence is that such a person could trigger a
@@ -617,6 +627,22 @@ returns HTTP 400 on current models**, so that cannot work. Instead:
 7. **Submit one `COMMENT` review.**
 8. **Save** each posted finding's concept and severity, plus the run's usage
    and cost.
+
+---
+
+## Architecture decisions
+
+Decisions that were expensive to reach and would be expensive to reverse by
+accident live in [`docs/adr/`](docs/adr/). Start with the index.
+
+| ADR | Question it answers | Status |
+|---|---|---|
+| [0002](docs/adr/0002-shuriken-data-ownership.md) | Should Shuriken own its own database? | Accepted — no, keep it in the platform database |
+| [0003](docs/adr/0003-least-privilege-identity-reads.md) | How little of `users` can Shuriken be allowed to read? | **Proposed** |
+| [0004](docs/adr/0004-integration-boundary.md) | How do the platform and Kunai read Shuriken's data? | **Proposed** |
+
+0002 and 0004 are a pair: storage stays shared *because* the access boundary
+keeps that reversible. If you read only one, read 0002.
 
 ---
 
