@@ -21,7 +21,18 @@ rather than describing it second-hand:
 
 ```bash
 cp ../shuriken-bot/docs/platform-integration.md docs/shuriken-integration.md
+
+# Brand assets, for the docs page and the article.
+mkdir -p public/shuriken
+cp ../shuriken-bot/assets/shuriken-full.png \
+   ../shuriken-bot/assets/shuriken-full-light.png \
+   ../shuriken-bot/assets/shuriken-logo.png public/shuriken/
 ```
+
+The lockup comes in two versions because the wordmark is off-white: use
+`shuriken-full.png` on dark backgrounds, `shuriken-full-light.png` on light
+ones, and `shuriken-logo.png` (the mark alone) wherever one file has to work on
+both. `../shuriken-bot/assets/README.md` has the palette.
 
 If you would rather not copy it, replace the first bullet of **Context** with
 the path to your checkout of `shuriken-bot`.
@@ -205,6 +216,9 @@ Rules for the article:
 - Do not claim adoption numbers, benchmarks or results we have not measured.
   It is new; say so.
 - Code snippets only where they carry the point. Short ones.
+- If the article has a header image, use the Shuriken lockup copied above — the
+  light or dark version, whichever suits the site's theme. Do not generate or
+  commission new artwork.
 - Explain the reasoning, including what was rejected and why. That is the part
   readers get value from.
 

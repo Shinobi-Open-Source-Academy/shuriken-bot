@@ -1,4 +1,16 @@
-# Shuriken
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/shuriken-full.png">
+    <source media="(prefers-color-scheme: light)" srcset="assets/shuriken-full-light.png">
+    <img src="assets/shuriken-full-light.png" alt="Shuriken" width="320">
+  </picture>
+</p>
+
+<p align="center">
+  <em>A teaching-first GitHub App for the Shinobi Open Source Academy.</em>
+</p>
+
+---
 
 A GitHub App for **SOS Academy** (Shinobi Open Source Academy) that does two
 things:
@@ -187,6 +199,9 @@ To hand the consumer side to the platform repo, use
 - **Webhook URL**: `https://<your-host>/webhook`
 - **Webhook secret**: generate a long random value, e.g.
   `openssl rand -hex 32`. You need this in both places.
+- **Logo**: upload [`assets/shuriken-avatar.png`](assets/shuriken-avatar.png).
+  This is the avatar on every comment and review Shuriken posts, so it is worth
+  setting before the App is installed anywhere.
 
 ### 2. Permissions — exactly these, nothing more
 

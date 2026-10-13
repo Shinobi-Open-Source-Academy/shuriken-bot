@@ -103,9 +103,13 @@ version, plus the one thing you cannot do yet:
 2. **Events:** Issues, Pull request, Pull request review, Issue comment, Pull
   request review comment. Five, and not `push`.
 3. Generate a private key, note the App ID.
-4. Leave the **webhook URL blank for now** — you do not have a Cloud Run URL
+4. Upload [`assets/shuriken-avatar.png`](../assets/shuriken-avatar.png) as the
+  App's **logo**. Do this now rather than later: the avatar is what contributors
+  see beside every review Shuriken posts, and GitHub's default is a grey
+  identicon that looks like a stranger wandered into the thread.
+5. Leave the **webhook URL blank for now** — you do not have a Cloud Run URL
   until Phase 5. You will come back and set it.
-5. **Do not install it on any repository yet.** Installing it is what starts
+6. **Do not install it on any repository yet.** Installing it is what starts
   real traffic, and that is Phase 6.
 
 ---
