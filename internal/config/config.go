@@ -16,8 +16,14 @@ import (
 // methods all redact, so it is safe to log a struct that contains one.
 type Secret string
 
-func (s Secret) String() string               { return "[REDACTED]" }
-func (s Secret) GoString() string             { return "[REDACTED]" }
+// String redacts, so a %s or %v verb on a secret cannot leak it.
+func (s Secret) String() string { return "[REDACTED]" }
+
+// GoString redacts, covering the %#v verb.
+func (s Secret) GoString() string { return "[REDACTED]" }
+
+// MarshalJSON redacts, so a secret inside a struct that gets serialised into
+// a log line does not leak either.
 func (s Secret) MarshalJSON() ([]byte, error) { return []byte(`"[REDACTED]"`), nil }
 
 // Reveal returns the underlying value. Call it only where the secret is
@@ -149,7 +155,9 @@ func Load() (*Config, error) {
 
 	// A key file is the usual deployment shape; the inline PEM is for local work.
 	if path := env("SHURIKEN_GITHUB_PRIVATE_KEY_FILE", ""); path != "" {
-		pem, err := os.ReadFile(path)
+		// The path comes from the operator's own environment, which is the
+		// intended way to supply the key. There is no untrusted input here.
+		pem, err := os.ReadFile(path) //nolint:gosec // operator-supplied path by design
 		if err != nil {
 			return nil, fmt.Errorf("reading SHURIKEN_GITHUB_PRIVATE_KEY_FILE: %w", err)
 		}

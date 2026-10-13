@@ -2,6 +2,7 @@ package logging
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -120,10 +121,10 @@ func TestNewRespectsLevel(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.level, func(t *testing.T) {
 			log := New(tc.level, nil)
-			if got := log.Enabled(nil, slog.LevelDebug); got != tc.wantDebug {
+			if got := log.Enabled(context.Background(), slog.LevelDebug); got != tc.wantDebug {
 				t.Errorf("debug enabled = %v, want %v", got, tc.wantDebug)
 			}
-			if !log.Enabled(nil, slog.LevelError) {
+			if !log.Enabled(context.Background(), slog.LevelError) {
 				t.Error("error level must always be enabled")
 			}
 		})

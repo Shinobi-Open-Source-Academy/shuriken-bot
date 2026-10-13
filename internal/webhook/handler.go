@@ -66,7 +66,8 @@ func (h *Handler) Routes() *http.ServeMux {
 func (h *Handler) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, `{"status":"ok","queueDepth":%d,"dryRun":%t}`+"\n", h.pool.Depth(), h.dryRun)
+	// A failed write to an already-committed response cannot be recovered from.
+	_, _ = fmt.Fprintf(w, `{"status":"ok","queueDepth":%d,"dryRun":%t}`+"\n", h.pool.Depth(), h.dryRun)
 }
 
 func (h *Handler) handleWebhook(w http.ResponseWriter, r *http.Request) {

@@ -16,6 +16,8 @@ var ErrDuplicate = errors.New("store: duplicate record")
 // ActivityType enumerates the contributor actions Shuriken records in v0.
 type ActivityType string
 
+// The activity types Shuriken records. These strings are persisted, so
+// changing one is a data migration, not a rename.
 const (
 	IssueOpened       ActivityType = "issue_opened"
 	PROpened          ActivityType = "pr_opened"
@@ -30,6 +32,7 @@ const (
 // Severity ranks a review finding. Order matters: see Rank.
 type Severity string
 
+// The severities a finding may carry, highest first.
 const (
 	SeverityHigh   Severity = "high"
 	SeverityMedium Severity = "medium"

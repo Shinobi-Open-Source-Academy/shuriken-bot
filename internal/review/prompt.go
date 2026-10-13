@@ -153,17 +153,17 @@ func UserContent(c Context) string {
 	b.WriteString("\n\n")
 
 	if len(c.SkippedSize) > 0 {
-		b.WriteString(fmt.Sprintf(
+		fmt.Fprintf(&b,
 			"This pull request exceeded the review size limit. You are seeing the %d highest risk files; %d were not included. Say so in your summary and name a few of them.\n\n",
-			len(c.Files), len(c.SkippedSize)))
+			len(c.Files), len(c.SkippedSize))
 	}
 
 	b.WriteString("<pull_request_data>\n")
-	b.WriteString(fmt.Sprintf("repository: %s\n", c.PR.URL))
-	b.WriteString(fmt.Sprintf("pull request: #%d\n", c.PR.Number))
-	b.WriteString(fmt.Sprintf("head commit: %s\n", c.PR.HeadSHA))
-	b.WriteString(fmt.Sprintf("base branch: %s\n", c.PR.BaseRef))
-	b.WriteString(fmt.Sprintf("changed files: %d (+%d -%d)\n\n", c.PR.ChangedFiles, c.PR.Additions, c.PR.Deletions))
+	fmt.Fprintf(&b, "repository: %s\n", c.PR.URL)
+	fmt.Fprintf(&b, "pull request: #%d\n", c.PR.Number)
+	fmt.Fprintf(&b, "head commit: %s\n", c.PR.HeadSHA)
+	fmt.Fprintf(&b, "base branch: %s\n", c.PR.BaseRef)
+	fmt.Fprintf(&b, "changed files: %d (+%d -%d)\n\n", c.PR.ChangedFiles, c.PR.Additions, c.PR.Deletions)
 
 	b.WriteString("<title>\n")
 	b.WriteString(clip(c.PR.Title, 500))
@@ -178,12 +178,12 @@ func UserContent(c Context) string {
 	b.WriteString("\n</description>\n\n")
 
 	if len(c.SkippedNoise) > 0 {
-		b.WriteString(fmt.Sprintf("<excluded_as_noise count=\"%d\">\n", len(c.SkippedNoise)))
+		fmt.Fprintf(&b, "<excluded_as_noise count=\"%d\">\n", len(c.SkippedNoise))
 		b.WriteString(strings.Join(clipList(c.SkippedNoise, 40), "\n"))
 		b.WriteString("\n</excluded_as_noise>\n\n")
 	}
 	if len(c.SkippedSize) > 0 {
-		b.WriteString(fmt.Sprintf("<not_reviewed_size_limit count=\"%d\">\n", len(c.SkippedSize)))
+		fmt.Fprintf(&b, "<not_reviewed_size_limit count=\"%d\">\n", len(c.SkippedSize))
 		b.WriteString(strings.Join(clipList(c.SkippedSize, 40), "\n"))
 		b.WriteString("\n</not_reviewed_size_limit>\n\n")
 	}

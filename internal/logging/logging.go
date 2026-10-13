@@ -44,8 +44,6 @@ func nonTrivial(in []string) []string {
 type redactingHandler struct {
 	inner   slog.Handler
 	secrets []string
-	attrs   []slog.Attr
-	groups  []string
 }
 
 func (h *redactingHandler) Enabled(ctx context.Context, l slog.Level) bool {

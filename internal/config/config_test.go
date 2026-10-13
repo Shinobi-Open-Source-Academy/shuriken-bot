@@ -15,7 +15,10 @@ func TestSecretNeverRenders(t *testing.T) {
 	for _, got := range []string{
 		s.String(),
 		fmt.Sprintf("%v", s),
-		fmt.Sprintf("%s", s),
+		// Calling String() here would defeat the test: the point is that the
+		// %s verb itself redacts, because that is how a stray log call
+		// formats a secret.
+		fmt.Sprintf("%s", s), //nolint:staticcheck // S1025: verb under test
 		fmt.Sprintf("%q", s.String()),
 		fmt.Sprintf("%#v", s),
 		fmt.Sprintf("%+v", struct{ Token Secret }{s}),

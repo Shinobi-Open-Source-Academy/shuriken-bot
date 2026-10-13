@@ -33,6 +33,14 @@ linters:
           - errcheck
           - gosec
 
+      # storetest is an in-memory fake whose exported methods exist only to
+      # satisfy store.Store, which already documents each one. Restating those
+      # contracts on ten methods would be noise, not documentation.
+      - path: internal/store/storetest/
+        text: "exported method Fake\\."
+        linters:
+          - revive
+
 formatters:
   enable:
     - gofmt

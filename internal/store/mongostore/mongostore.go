@@ -268,7 +268,9 @@ func (s *Store) ensureProjects(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("load projects: %w", err)
 	}
-	defer cur.Close(ctx)
+	// Close only reports a failure to release a server-side cursor, which
+	// there is no useful recovery from at this point.
+	defer func() { _ = cur.Close(ctx) }()
 
 	cache := map[string]string{}
 	for cur.Next(ctx) {

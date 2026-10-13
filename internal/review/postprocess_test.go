@@ -378,14 +378,14 @@ func TestRenderCommentWithholdsFixUnlessMechanical(t *testing.T) {
 }
 
 func TestRenderReviewBodyFallsBackWhenSummaryEmpty(t *testing.T) {
-	body := RenderReviewBody(ReviewBodyInput{BotHandle: "shuriken-bot"})
+	body := RenderReviewBody(BodyInput{BotHandle: "shuriken-bot"})
 	if strings.TrimSpace(body) == "" {
 		t.Fatal("an empty summary must still produce a body")
 	}
 }
 
 func TestRenderReviewBodyNamesSkippedFiles(t *testing.T) {
-	body := RenderReviewBody(ReviewBodyInput{
+	body := RenderReviewBody(BodyInput{
 		Summary:        "Looks reasonable.",
 		BotHandle:      "shuriken-bot",
 		SkippedForSize: []string{"big/one.go", "big/two.go"},
@@ -400,21 +400,21 @@ func TestRenderReviewBodyNamesSkippedFiles(t *testing.T) {
 // explain is only advertised when something was actually held back, and never
 // to insiders who asked for terse output.
 func TestRenderReviewBodyAdvertisesExplainOnlyWhenUseful(t *testing.T) {
-	with := RenderReviewBody(ReviewBodyInput{
+	with := RenderReviewBody(BodyInput{
 		Summary: "x", BotHandle: "shuriken-bot", HasWithheldFix: true, Tier: TierNewcomer,
 	})
 	if !strings.Contains(with, "explain") {
 		t.Error("expected explain to be offered when a fix was withheld")
 	}
 
-	without := RenderReviewBody(ReviewBodyInput{
+	without := RenderReviewBody(BodyInput{
 		Summary: "x", BotHandle: "shuriken-bot", HasWithheldFix: false, Tier: TierNewcomer,
 	})
 	if strings.Contains(without, "explain") {
 		t.Error("explain offered when nothing was withheld")
 	}
 
-	insider := RenderReviewBody(ReviewBodyInput{
+	insider := RenderReviewBody(BodyInput{
 		Summary: "x", BotHandle: "shuriken-bot", HasWithheldFix: true, Tier: TierInsider,
 	})
 	if strings.Contains(insider, "explain") {

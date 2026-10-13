@@ -234,19 +234,19 @@ func (c *restClient) CreateReview(ctx context.Context, owner, repo string, numbe
 	drafts := make([]*gh.DraftReviewComment, 0, len(comments))
 	for _, cm := range comments {
 		drafts = append(drafts, &gh.DraftReviewComment{
-			Path: gh.Ptr(cm.Path),
-			Line: gh.Ptr(cm.Line),
-			Side: gh.Ptr(cm.Side),
-			Body: gh.Ptr(cm.Body),
+			Path: new(cm.Path),
+			Line: new(cm.Line),
+			Side: new(cm.Side),
+			Body: new(cm.Body),
 		})
 	}
 
 	// event COMMENT only. Shuriken is a mentor, not a gatekeeper: it must never
 	// be able to approve or block a pull request.
 	req := &gh.PullRequestReviewRequest{
-		CommitID: gh.Ptr(commitSHA),
-		Body:     gh.Ptr(body),
-		Event:    gh.Ptr("COMMENT"),
+		CommitID: new(commitSHA),
+		Body:     new(body),
+		Event:    new("COMMENT"),
 		Comments: drafts,
 	}
 	review, _, err := c.api.PullRequests.CreateReview(ctx, owner, repo, number, req)

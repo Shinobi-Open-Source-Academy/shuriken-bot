@@ -210,7 +210,9 @@ func (s *Store) LatestReviewFindings(ctx context.Context, prGithubID int64) ([]*
 	if err != nil {
 		return nil, fmt.Errorf("latest review findings: %w", err)
 	}
-	defer cur.Close(ctx)
+	// Close only reports a failure to release a server-side cursor, which
+	// there is no useful recovery from at this point.
+	defer func() { _ = cur.Close(ctx) }()
 
 	var out []*store.Finding
 	for cur.Next(ctx) {

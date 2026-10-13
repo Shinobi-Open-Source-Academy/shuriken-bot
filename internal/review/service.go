@@ -281,7 +281,7 @@ func (s *Service) execute(
 		})
 	}
 
-	body := RenderReviewBody(ReviewBodyInput{
+	body := RenderReviewBody(BodyInput{
 		Summary:        result.Output.Summary,
 		Mode:           job.Mode,
 		Tier:           tier,

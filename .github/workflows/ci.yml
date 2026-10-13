@@ -42,10 +42,26 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      # Three constraints have to line up here, and getting any one wrong
+      # fails before a single linter runs:
+      #
+      #   1. .golangci.yml uses the v2 config schema, which needs
+      #      golangci-lint v2. Action v6 was the last major to install v1, and
+      #      its "latest" resolved against the v1 module path (v1.64.8).
+      #   2. golangci-lint refuses to run when the Go version it was BUILT
+      #      with is older than the `go` directive in go.mod. go.mod targets
+      #      1.26.0; v2.14.0's binaries are built with go1.27.0, but v2.6.2's
+      #      were built with go1.25.3 and would fail. Check when bumping:
+      #      `go version $(which golangci-lint)`.
+      #   3. The version is pinned, not `latest`, so a new release adding
+      #      rules cannot fail an unrelated pull request.
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
+          version: v2.14.0
+          # Defaults cap repeats of the same issue at 3, which hides the real
+          # scale of a failure. Report everything.
+          args: --max-same-issues=0 --max-issues-per-linter=0
 
   test:
     name: Test
