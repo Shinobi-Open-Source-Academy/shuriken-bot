@@ -33,6 +33,11 @@ import (
 	"github.com/sos-academy/shuriken/internal/worker"
 )
 
+// version is set at build time via -ldflags "-X main.version=...". The deploy
+// workflow passes the commit SHA, so a running revision can be identified from
+// its first log line.
+var version = "dev"
+
 func main() {
 	if err := run(); err != nil {
 		// The logger may not exist yet, so this goes to stderr directly.
@@ -60,6 +65,7 @@ func run() error {
 	slog.SetDefault(log)
 
 	log.Info("starting shuriken",
+		slog.String("version", version),
 		slog.String("addr", cfg.Addr),
 		slog.String("model", cfg.Model),
 		slog.String("botHandle", cfg.BotHandle),

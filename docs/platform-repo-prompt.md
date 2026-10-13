@@ -4,8 +4,24 @@ Paste the block below into Claude Code **from the `sos-academy-platform`
 working directory**. It asks for three things: the consumer endpoint,
 documentation, and an article.
 
-Before pasting, copy Shuriken's contract over so the prompt can point at a
-real file rather than describing it second-hand:
+Shuriken is deployed to Cloud Run in the same GCP project as the platform
+(`sos-academy-483918` / `us-central1`), so the platform side needs no new
+infrastructure — just one route and one secret in the Secret Manager setup it
+already has.
+
+**Generate the shared secret first and keep it to hand**, because both sides
+need the same value:
+
+```bash
+openssl rand -hex 32
+```
+
+It becomes `SHURIKEN_WEBHOOK_SECRET` on the platform and
+`SHURIKEN_CONSUMER_WEBHOOK_SECRET` on Shuriken. Until they match, every
+delivery is a 401.
+
+Then copy Shuriken's contract over so the prompt can point at a real file
+rather than describing it second-hand:
 
 ```bash
 cp ../shuriken-bot/docs/platform-integration.md docs/shuriken-integration.md
@@ -103,6 +119,25 @@ Add to .env.example: `SHURIKEN_WEBHOOK_SECRET=`, with a comment that it must
 match Shuriken's `SHURIKEN_CONSUMER_WEBHOOK_SECRET` and is generated with
 `openssl rand -hex 32`.
 
+## Part 1b — deployment
+
+Follow the existing conventions in docs/gcp-cloud-run-deploy.md rather than
+inventing anything:
+
+- Add `SHURIKEN_WEBHOOK_SECRET` to Secret Manager with the same loop Phase 2
+  of that document uses.
+- Grant `roles/secretmanager.secretAccessor` on it to the existing
+  `sos-server-run` service account.
+- Note in the docs that the running service picks it up via `--set-secrets` on
+  the next manual config change, and that deploy-server.yml deliberately
+  carries existing secret references over, so a bare image redeploy will not
+  add it on its own.
+
+The route must be reachable without a Google identity, because Shuriken
+authenticates with HMAC rather than IAM — the same position the GitHub OAuth
+callback is already in. Do not put it behind authentication that would reject
+an unauthenticated POST.
+
 ## Part 2 — documentation
 
 Write `docs/shuriken.md` for a maintainer setting this up, covering:
@@ -181,6 +216,13 @@ Rules for the article:
 
 Report what you changed, run `pnpm check` and the tests, and show me the diff
 before committing anything.
+
+Then tell me, in a short list:
+- the endpoint path you settled on, so I can set
+  SHURIKEN_CONSUMER_WEBHOOK_URL on Shuriken to match
+- the exact curl command to verify it locally, with a valid signature
+- anything in the contract document you found ambiguous or wrong — that
+  document is maintained on the Shuriken side and I will fix it there
 ```
 
 ---

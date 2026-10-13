@@ -30,6 +30,7 @@ To consume its events, see
 
 - [How it behaves](#how-it-behaves)
 - [Quick start](#quick-start)
+- [Shipping to GCP](#shipping-to-gcp)
 - [GitHub App setup](#github-app-setup)
 - [Database setup](#database-setup)
 - [Configuration](#configuration)
@@ -153,6 +154,27 @@ curl -sS -X POST http://localhost:8080/webhook \
 You should see `DRY RUN would record activity` in the logs. Change the
 `X-GitHub-Delivery` value to see it processed again; keep it the same to see
 the redelivery dropped.
+
+---
+
+## Shipping to GCP
+
+See **[`docs/shipping.md`](docs/shipping.md)** for the full path: MongoDB
+Atlas, Secret Manager, service accounts, Workload Identity Federation, the
+Cloud Run deploy, and a staged plan for testing against real pull requests.
+
+Two things from it are worth knowing before you start:
+
+- **Cloud Run needs `--no-cpu-throttling --min-instances=1`.** The outbox
+  publisher is a background goroutine; with CPU throttled between requests or
+  the service scaled to zero it never runs, and the failure is silent —
+  webhooks are accepted and `outboxPending` climbs forever.
+- **Deploy with `SHURIKEN_DRY_RUN=1` first.** Shuriken then reads GitHub and
+  writes nothing: no comments, no reviews, no database. You can read the exact
+  review it *would* post in the logs before a contributor sees it.
+
+To hand the consumer side to the platform repo, use
+[`docs/platform-repo-prompt.md`](docs/platform-repo-prompt.md).
 
 ---
 
