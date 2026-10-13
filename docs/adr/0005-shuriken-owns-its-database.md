@@ -109,8 +109,8 @@ delivery is not best-effort:
   here is latency-critical.
 - **Consumers must be idempotent.** At-least-once means a duplicate will
   arrive eventually. The idempotency key makes that cheap, but it is a real
-  requirement on the consumer, documented in
-  [`docs/platform-integration.md`](../platform-integration.md).
+  requirement on the consumer, and is stated in the contract handed to
+  them.
 - **Two copies of the data exist**, Shuriken's records and each consumer's
   projection, and they can diverge if a consumer mishandles an event. The
   dead-letter count is the signal.

@@ -377,7 +377,7 @@ func TestIntegrationDeadLetterCanBeReplayed(t *testing.T) {
 		t.Fatalf("expected the event to be dead-lettered first")
 	}
 
-	// The update documented in docs/shipping.md under "Operating it".
+	// The dead-letter replay documented in the operator runbook.
 	if _, err := s.db.Collection(CollOutbox).UpdateMany(ctx,
 		bson.D{{Key: "deadLetteredAt", Value: bson.D{{Key: "$ne", Value: nil}}}},
 		bson.D{

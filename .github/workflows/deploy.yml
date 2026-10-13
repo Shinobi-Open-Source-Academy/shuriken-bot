@@ -87,7 +87,7 @@ jobs:
         # --image=...` with no other config flags carries the previous
         # revision's env vars and secret references over unchanged and only
         # swaps the image. Config changes go through the CLI by hand, per
-        # docs/shipping.md, and this workflow preserves whatever that left.
+        # the first manual deploy, and this workflow preserves whatever that left.
 
       - name: Smoke test the new revision
         run: |

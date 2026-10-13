@@ -1,5 +1,13 @@
 # See https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files
 
+# ---- Operator documentation ----
+# The deploy runbook, the consumer contract and the handoff prompt carry
+# project ids, account names and deployment detail. They are held by the
+# operator and distributed deliberately, not published with the code.
+docs/shipping.md
+docs/platform-integration.md
+docs/platform-repo-prompt.md
+
 # ---- Secrets ----
 # Shuriken's secrets (GitHub App private key, webhook secret, ANTHROPIC_API_KEY,
 # Mongo credentials) all arrive as environment variables. Nothing here should

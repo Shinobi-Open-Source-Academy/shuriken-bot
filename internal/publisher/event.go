@@ -7,7 +7,7 @@
 //
 // Delivery is at-least-once. Every event carries an idempotency key and the
 // consumer is expected to dedupe on it; see the contract in
-// docs/platform-integration.md.
+// the consumer contract.
 package publisher
 
 import (

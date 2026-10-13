@@ -29,8 +29,10 @@ are identified by GitHub id, and the consumer joins that against its own
 records. That is what makes the same deployment usable by a project unrelated
 to SOS Academy. See [ADR 0005](docs/adr/0005-shuriken-owns-its-database.md).
 
-To consume its events, see
-[`docs/platform-integration.md`](docs/platform-integration.md).
+Consumers receive a signed HTTP event per activity; the payload mirrors the
+stored records described under [Data model](#data-model), and the wire format
+is `internal/publisher/event.go`. The full contract is handed to consumers
+directly rather than kept here.
 
 > **v0 scope.** No backfill of history, no ranks or belts, no Kunai
 > integration, no learning from past maintainer reviews, no duplicate-PR
@@ -171,11 +173,11 @@ the redelivery dropped.
 
 ## Shipping to GCP
 
-See **[`docs/shipping.md`](docs/shipping.md)** for the full path: MongoDB
-Atlas, Secret Manager, service accounts, Workload Identity Federation, the
-Cloud Run deploy, and a staged plan for testing against real pull requests.
+Deployment is MongoDB Atlas, Secret Manager, a service account, Workload
+Identity Federation and Cloud Run. The runbook is held by the operator rather
+than committed, since it carries project ids and account names.
 
-Two things from it are worth knowing before you start:
+Two things in it are easy to get wrong and expensive to debug:
 
 - **Cloud Run needs `--no-cpu-throttling --min-instances=1`.** The outbox
   publisher is a background goroutine; with CPU throttled between requests or
@@ -184,9 +186,6 @@ Two things from it are worth knowing before you start:
 - **Deploy with `SHURIKEN_DRY_RUN=1` first.** Shuriken then reads GitHub and
   writes nothing: no comments, no reviews, no database. You can read the exact
   review it *would* post in the logs before a contributor sees it.
-
-To hand the consumer side to the platform repo, use
-[`docs/platform-repo-prompt.md`](docs/platform-repo-prompt.md).
 
 ---
 
