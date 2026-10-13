@@ -1,0 +1,11 @@
+.git
+.github
+*_test.go
+migrations
+examples
+README.md
+Dockerfile
+.dockerignore
+.env
+.env.*
+!.env.example

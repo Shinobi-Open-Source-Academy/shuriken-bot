@@ -1,0 +1,38 @@
+version: "2"
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - bodyclose
+    - errorlint
+    - misspell
+    - revive
+    - unconvert
+    - gosec
+
+  settings:
+    gosec:
+      excludes:
+        # G104 duplicates errcheck.
+        - G104
+    revive:
+      rules:
+        - name: exported
+          disabled: false
+
+  exclusions:
+    rules:
+      # Tests legitimately ignore errors on fixture setup and construct
+      # deliberately bad input.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
+
+formatters:
+  enable:
+    - gofmt

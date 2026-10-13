@@ -1,0 +1,66 @@
+# See https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files
+
+# ---- Secrets ----
+# Shuriken's secrets (GitHub App private key, webhook secret, ANTHROPIC_API_KEY,
+# Mongo credentials) all arrive as environment variables. Nothing here should
+# ever be committed.
+.env
+.env.*
+!.env.example
+.envrc
+
+# GitHub App private keys, in every format GitHub or openssl might hand you.
+*.pem
+*.key
+*.p8
+*.p12
+*.pfx
+*.der
+*.crt
+*-private-key*
+
+# ---- Go build output ----
+/shuriken
+/cmd/shuriken/shuriken
+/out/
+/dist/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Go workspace files are local-only; the module is pinned by go.mod/go.sum.
+go.work
+go.work.sum
+
+# ---- Test, coverage and profiling output ----
+*.test
+*.out
+coverage.*
+cover.*
+*.cover
+*.prof
+*.pprof
+
+# ---- IDEs and editors ----
+# Mirrors the platform repo: shared VS Code config is tracked, personal state
+# is not.
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+/.idea
+*.swp
+*.swo
+*~
+
+# ---- OS ----
+.DS_Store
+._*
+.AppleDouble
+Thumbs.db
+
+# ---- Local scratch ----
+/tmp/
+/scratch/
