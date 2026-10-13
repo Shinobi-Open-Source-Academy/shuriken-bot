@@ -1,6 +1,13 @@
 # 0002. Shuriken's data stays in the platform database
 
-- **Status:** Accepted
+- **Status:** Superseded by [0005](0005-shuriken-owns-its-database.md)
+
+> **Superseded.** This ADR's reasoning holds for the premise it was given
+> — one bot, one academy, one database. That premise no longer applies:
+> Shuriken is now intended for use by other projects, which makes SOS
+> Academy a consumer rather than the platform. Kept because the cost
+> analysis of a split, and the three-way storage comparison, are what
+> 0005 builds on.
 - **Date:** 2026-10-13
 - **Related:** [0003](0003-least-privilege-identity-reads.md),
 [0004](0004-integration-boundary.md)

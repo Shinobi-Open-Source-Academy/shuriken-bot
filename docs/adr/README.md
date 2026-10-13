@@ -14,9 +14,14 @@ fine; quietly rewriting the reasoning is not.
 | ADR | Title | Status |
 |---|---|---|
 | [0001](0001-record-architecture-decisions.md) | Record architecture decisions | Accepted |
-| [0002](0002-shuriken-data-ownership.md) | Shuriken's data stays in the platform database | Accepted |
-| [0003](0003-least-privilege-identity-reads.md) | Read platform identities through a projected view | **Proposed** |
-| [0004](0004-integration-boundary.md) | Expose contributor data through a read API, not shared collections | **Proposed** |
+| [0002](0002-shuriken-data-ownership.md) | Shuriken's data stays in the platform database | Superseded by 0005 |
+| [0003](0003-least-privilege-identity-reads.md) | Read platform identities through a projected view | Superseded by 0005 |
+| [0004](0004-integration-boundary.md) | Expose contributor data through a read API, not shared collections | Superseded by 0005 |
+| [0005](0005-shuriken-owns-its-database.md) | Shuriken owns its database; integration is a signed outbound webhook | Accepted |
+
+Reading 0002 through 0005 in order shows how the decision moved and why, which
+is more useful than 0005 alone: 0002 and 0004 were right for a single-academy
+bot, and the move to a tool other projects can use is what changed the answer.
 
 ## Status values
 

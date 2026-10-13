@@ -1,7 +1,13 @@
 # 0004. Expose contributor data through a read API, not shared collections
 
-- **Status:** Proposed — one part is a commitment to make now, the rest is
-  deferred to when Kunai work starts
+- **Status:** Superseded by [0005](0005-shuriken-owns-its-database.md)
+
+> **Superseded.** The commitment made here — nothing outside Shuriken
+> reads its collections — was kept, and is what made 0005 a contained
+> change. The recommendation of a *pull* read API was reversed: under
+> multi-tenancy other consumers will not share database credentials, so
+> push became the primary direction. The read API may still return later,
+> alongside push, for backfill and reconciliation.
 - **Date:** 2026-10-13
 - **Related:** [0002](0002-shuriken-data-ownership.md)
 
