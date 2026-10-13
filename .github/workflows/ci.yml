@@ -90,6 +90,56 @@ jobs:
       - name: Coverage summary
         run: go tool cover -func=coverage.out | tail -1
 
+  integration:
+    name: MongoDB integration
+    runs-on: ubuntu-latest
+    # The outbox lease is what stops two instances delivering the same event.
+    # The in-memory fake can only imitate it, so these tests run against a
+    # real MongoDB: they cover unique-index collisions and the atomicity of
+    # FindOneAndUpdate, neither of which a fake can prove.
+    services:
+      mongo:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.adminCommand(\"ping\").ok'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Run integration tests
+        env:
+          # Setting this is what un-skips them; the plain `test` job above runs
+          # without it so the unit suite needs no database.
+          SHURIKEN_TEST_MONGODB_URI: mongodb://localhost:27017
+        run: |
+          go test -race -run TestIntegration -v ./internal/store/mongostore/ 2>&1 | tee /tmp/it.log
+          echo "--- summary ---"
+          grep -cE '^--- PASS' /tmp/it.log | xargs -I{} echo "{} integration tests passed"
+
+      - name: Each test must drop its own database
+        env:
+          SHURIKEN_TEST_MONGODB_URI: mongodb://localhost:27017
+        run: |
+          # A test that leaks its database would let runs interfere, which
+          # would show up as flakiness rather than a clear failure.
+          leftovers=$(docker exec "$(docker ps -q --filter ancestor=mongo:7)" \
+            mongosh --quiet --eval \
+            'db.getMongo().getDBNames().filter(n => n.startsWith("shuriken_itest_")).join(",")')
+          if [ -n "$leftovers" ]; then
+            echo "::error::integration tests leaked databases: $leftovers"
+            exit 1
+          fi
+          echo "✅ no leaked test databases"
+
   vuln:
     name: Vulnerability scan
     runs-on: ubuntu-latest

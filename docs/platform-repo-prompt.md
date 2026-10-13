@@ -1,16 +1,12 @@
 # Prompt for the `sos-academy-platform` repo
 
-Paste the block below into Claude Code **from the `sos-academy-platform`
-working directory**. It asks for three things: the consumer endpoint,
+Paste the block below into Claude Code **from the** `sos-academy-platform`
+**working directory**. It asks for three things: the consumer endpoint,
 documentation, and an article.
 
-Shuriken is deployed to Cloud Run in the same GCP project as the platform
-(`sos-academy-483918` / `us-central1`), so the platform side needs no new
-infrastructure — just one route and one secret in the Secret Manager setup it
-already has.
+Shuriken is deployed to Cloud Run in the same GCP project as the platform (`sos-academy-483918` / `us-central1`), so the platform side needs no new infrastructure — just one route and one secret in the Secret Manager setup it already has.
 
-**Generate the shared secret first and keep it to hand**, because both sides
-need the same value:
+**Generate the shared secret first and keep it to hand**, because both sides need the same value:
 
 ```bash
 openssl rand -hex 32
@@ -225,7 +221,11 @@ Then tell me, in a short list:
   document is maintained on the Shuriken side and I will fix it there
 ```
 
+
+
 ---
+
+
 
 ## Keeping the two sides in step
 

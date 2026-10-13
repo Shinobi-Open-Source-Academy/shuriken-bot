@@ -733,10 +733,28 @@ Table-driven, with the GitHub, Anthropic and store interfaces faked.
 | Malformed output | retried exactly once, then gives up; refusals not retried |
 | Review service | authorization matrix, draft/bot skips, idempotency, dry run, secret redaction |
 | Secret handling | `%v`/`%s`/`%#v`/JSON redaction, scrubbing in messages, attrs, groups, errors |
+| Outbound delivery | signing, at-least-once retry, `429`/`5xx` retry vs `4xx` dead-letter, backoff bounds, idempotency keys, no consumer identity in a payload |
+| MongoDB semantics | unique-index collisions, exclusive outbox leasing under six concurrent publishers, expired-lease reclaim, dead-letter and replay (against a real `mongo:7`) |
 
 The `llm` tests drive the **real** Anthropic SDK against an `httptest` server,
 so the request serialisation — schema placement, cache breakpoint, `strict`,
 `tool_choice` — is asserted on the wire rather than mocked away.
+
+### Integration tests
+
+The outbox lease is what stops two instances delivering the same event, and a
+fake cannot prove `FindOneAndUpdate` is atomic. Those tests need a real
+MongoDB, so they skip unless a URI is supplied:
+
+```bash
+# Skipped by default — plain `go test ./...` needs no database.
+SHURIKEN_TEST_MONGODB_URI=mongodb://localhost:27017 \
+  go test -race -run TestIntegration ./internal/store/mongostore/
+```
+
+Each test creates a uniquely named throwaway database and drops it on cleanup,
+so runs never collide and nothing survives a failure. CI runs them against a
+`mongo:7` service container and fails if any database is left behind.
 
 ### Docker
 

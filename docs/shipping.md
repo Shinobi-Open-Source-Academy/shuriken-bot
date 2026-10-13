@@ -23,13 +23,15 @@ about.
 
 ---
 
+
+
 ## Read this first: the Cloud Run gotcha
 
 **Shuriken has a background goroutine.** The publisher drains the outbox on a
 timer, outside any HTTP request. Cloud Run's defaults break that in two ways:
 
 1. **CPU is throttled to near zero between requests.** A ticker does not fire.
-2. **`--min-instances=0` scales to zero.** With no instance, nothing drains.
+2. `--min-instances=0` **scales to zero.** With no instance, nothing drains.
 
 The symptom is nasty because nothing errors: webhooks are accepted, activity is
 recorded, `/healthz` says `ok` — and `outboxPending` climbs forever while the
@@ -56,17 +58,19 @@ endpoint, a token and a scheduler to get wrong. Not worth it for v1.
 
 ---
 
+
+
 ## Phase 1 — MongoDB
 
 Shuriken needs **its own database**. GCP has no managed MongoDB, so use Atlas
 (the platform's `MONGODB_URI` likely already points there).
 
 1. In the same Atlas project/cluster as the platform, create a database named
-   `shuriken`. A separate database in the same cluster is enough; a separate
+  `shuriken`. A separate database in the same cluster is enough; a separate
    cluster is a connection-string change away if you later want it.
 2. Create a user scoped to that database only.
 3. Allow Cloud Run's egress. Either allow-list `0.0.0.0/0` for now, or attach
-   a VPC connector with a NAT static IP and allow-list that. **If this is
+  a VPC connector with a NAT static IP and allow-list that. **If this is
    wrong, Shuriken fails on startup at the ping** rather than limping, which
    is the behaviour you want.
 4. Run the migrations from your laptop:
@@ -87,22 +91,26 @@ which is the guard against pointing it at the platform database by mistake.
 
 ---
 
+
+
 ## Phase 2 — The GitHub App
 
 Full detail is in the [README](../README.md#github-app-setup). The short
 version, plus the one thing you cannot do yet:
 
 1. Create the App. **Permissions:** Metadata read, Contents read, Issues
-   read+write, Pull requests read+write. Nothing else.
+  read+write, Pull requests read+write. Nothing else.
 2. **Events:** Issues, Pull request, Pull request review, Issue comment, Pull
-   request review comment. Five, and not `push`.
+  request review comment. Five, and not `push`.
 3. Generate a private key, note the App ID.
 4. Leave the **webhook URL blank for now** — you do not have a Cloud Run URL
-   until Phase 5. You will come back and set it.
+  until Phase 5. You will come back and set it.
 5. **Do not install it on any repository yet.** Installing it is what starts
-   real traffic, and that is Phase 6.
+  real traffic, and that is Phase 6.
 
 ---
+
+
 
 ## Phase 3 — Secrets
 
@@ -145,17 +153,23 @@ gcloud secrets create SHURIKEN_GITHUB_PRIVATE_KEY \
 
 Two secrets are shared with another system and must match exactly:
 
-| Secret | Must match |
-|---|---|
-| `SHURIKEN_GITHUB_WEBHOOK_SECRET` | the value in the GitHub App's settings |
+
+| Secret                             | Must match                               |
+| ---------------------------------- | ---------------------------------------- |
+| `SHURIKEN_GITHUB_WEBHOOK_SECRET`   | the value in the GitHub App's settings   |
 | `SHURIKEN_CONSUMER_WEBHOOK_SECRET` | the platform's `SHURIKEN_WEBHOOK_SECRET` |
+
 
 Generate the consumer secret with `openssl rand -hex 32` and give the same
 value to whoever sets up the platform endpoint.
 
 ---
 
+
+
 ## Phase 4 — Service accounts and WIF
+
+
 
 ### The runtime identity
 
@@ -218,7 +232,7 @@ gcloud iam service-accounts add-iam-policy-binding \
 ```
 
 Then point `WORKLOAD_IDENTITY_PROVIDER` in
-[`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml) at the new
+`[.github/workflows/deploy.yml](../.github/workflows/deploy.yml)` at the new
 provider:
 
 ```
@@ -231,6 +245,8 @@ projects/194253303838/locations/global/workloadIdentityPools/github-actions-pool
 > the trade you are making.
 
 ---
+
+
 
 ## Phase 5 — First deploy
 
@@ -271,14 +287,9 @@ gcloud run deploy shuriken \
 
 Note what is deliberate here:
 
-- **`--allow-unauthenticated`.** GitHub has to reach `/webhook`, and it cannot
-  present a Google identity. The endpoint authenticates every request itself
-  with HMAC and returns 401 otherwise, which is the real control.
-- **`SHURIKEN_DRY_RUN=1`.** The first deploy processes events and writes
-  nothing anywhere. You turn it off in Phase 6, not before.
-- **`SHURIKEN_CONSUMER_WEBHOOK_URL` is absent.** Publishing stays off until the
-  platform endpoint exists. Events accumulate in the outbox, which is fine and
-  visible on `/healthz`.
+- `--allow-unauthenticated`**.** GitHub has to reach `/webhook`, and it cannot present a Google identity. The endpoint authenticates every request itself with HMAC and returns 401 otherwise, which is the real control.
+- `SHURIKEN_DRY_RUN=1`**.** The first deploy processes events and writes nothing anywhere. You turn it off in Phase 6, not before.
+- `SHURIKEN_CONSUMER_WEBHOOK_URL` **is absent.** Publishing stays off until the platform endpoint exists. Events accumulate in the outbox, which is fine and visible on `/healthz`.
 
 Get the URL and finish the App:
 
@@ -314,6 +325,8 @@ A `mongo ping failed` here is almost always Atlas network access. The error
 never contains the connection string.
 
 ---
+
+
 
 ## Phase 6 — Testing against real PRs
 
@@ -366,8 +379,8 @@ gcloud run services logs read shuriken --region=us-central1 --limit=200 \
   | grep "review model run complete"
 ```
 
-That line carries `estimatedCostUsd`, token counts and `cacheReadTokens`. **If
-`cacheReadTokens` is 0 across several reviews of the same repository,** prompt
+That line carries `estimatedCostUsd`, token counts and `cacheReadTokens`. **If**
+`cacheReadTokens` **is 0 across several reviews of the same repository,** prompt
 caching is not working and reviews cost several times what they should.
 
 ### Step 3 — Tune before widening
@@ -397,8 +410,8 @@ dependent.
 ### Step 5 — Turn on publishing
 
 Only once the platform endpoint exists — hand whoever builds it
-[`docs/platform-integration.md`](platform-integration.md) and
-[`docs/platform-repo-prompt.md`](platform-repo-prompt.md).
+`[docs/platform-integration.md](platform-integration.md)` and
+`[docs/platform-repo-prompt.md](platform-repo-prompt.md)`.
 
 ```bash
 gcloud run services update shuriken --region=us-central1 \
@@ -418,21 +431,35 @@ immediately, so check what its handler returns.
 
 ---
 
+
+
 ## What CI checks on every PR
 
-| Job | Checks |
-|---|---|
-| **Lint & Format** | `gofmt`, `go mod tidy` is stable, `go vet`, migration syntax, `golangci-lint` v2.14.0 |
-| **Test** | `go test -race` with coverage |
-| **Vulnerability scan** | `govulncheck`, reachable vulnerabilities only |
-| **End-to-end smoke** | boots the real binary in dry-run; asserts 401 on unsigned, 401 on SHA-1, 202 on signed, correct normalisation, an outbound event is built, **the payload carries `actor.githubId` and no consumer identity**, and a clean SIGTERM shutdown |
-| **Build image** | amd64 build, then runs the image and asserts it is healthy and `nonroot` |
-| **PR title** | Conventional Commits, matching the platform's commitlint rules |
 
-The smoke job is the one that earns its place. Unit tests mock the GitHub and
-Anthropic boundaries, so nothing else proves the HTTP server, signature
+| Job                    | Checks                                                                                                                                                                                                                                         |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Lint & Format**      | `gofmt`, `go mod tidy` is stable, `go vet`, migration syntax, `golangci-lint` v2.14.0                                                                                                                                                          |
+| **Test**               | `go test -race` with coverage                                                                                                                                                                                                                  |
+| **Vulnerability scan** | `govulncheck`, reachable vulnerabilities only                                                                                                                                                                                                  |
+| **End-to-end smoke**   | boots the real binary in dry-run; asserts 401 on unsigned, 401 on SHA-1, 202 on signed, correct normalisation, an outbound event is built, **the payload carries** `actor.githubId` **and no consumer identity**, and a clean SIGTERM shutdown |
+| **Build image**        | amd64 build, then runs the image and asserts it is healthy and `nonroot`                                                                                                                                                                       |
+| **PR title**           | Conventional Commits, matching the platform's commitlint rules                                                                                                                                                                                 |
+
+
+Two of those jobs exist because a fake cannot prove what they prove.
+
+The **smoke** job covers the wiring: unit tests mock the GitHub and Anthropic
+boundaries, so nothing else shows that the HTTP server, signature
 verification, event routing, worker dispatch and payload construction work
 together.
+
+The **integration** job covers the database semantics the delivery guarantee
+rests on. `ClaimDue` leases a row with `FindOneAndUpdate` so two publishers
+cannot take the same event; the in-memory fake agrees with itself about that,
+which is not evidence. These tests run six concurrent publishers against a
+real MongoDB and assert no event is claimed twice, plus that an expired lease
+is reclaimed, that `MarkFailed` dead-letters at the attempt ceiling, and that
+the replay command in [Operating it](#operating-it) actually works.
 
 `golangci-lint` is **pinned**, not `latest`, for two reasons recorded in the
 workflow: the action's major must match the config schema version, and
@@ -441,6 +468,8 @@ golangci-lint refuses to run when the Go version it was built with predates
 
 ---
 
+
+
 ## Operating it
 
 ```bash
@@ -448,11 +477,13 @@ URL=$(gcloud run services describe shuriken --region=us-central1 --format='value
 curl -s "$URL/healthz"
 ```
 
-| Field | Watch for |
-|---|---|
-| `queueDepth` | climbing toward 256 means workers are behind — raise `SHURIKEN_WORKERS` |
-| `outboxPending` | steady above 0 means the consumer is unreachable, or publishing is off |
-| `outboxDeadLettered` | **alert on any non-zero value** |
+
+| Field                | Watch for                                                               |
+| -------------------- | ----------------------------------------------------------------------- |
+| `queueDepth`         | climbing toward 256 means workers are behind — raise `SHURIKEN_WORKERS` |
+| `outboxPending`      | steady above 0 means the consumer is unreachable, or publishing is off  |
+| `outboxDeadLettered` | **alert on any non-zero value**                                         |
+
 
 A dead-lettered event is the only record that a consumer never learned
 something. To replay after fixing the consumer:
@@ -468,15 +499,19 @@ db.shuriken_outbox.updateMany(
 
 Log lines worth knowing:
 
-| Grep for | Tells you |
-|---|---|
-| `starting shuriken` | which `version` (commit SHA) is running |
+
+| Grep for                    | Tells you                                  |
+| --------------------------- | ------------------------------------------ |
+| `starting shuriken`         | which `version` (commit SHA) is running    |
 | `rejected webhook delivery` | signature mismatches, with the delivery id |
-| `review model run complete` | tokens, cache hits, `estimatedCostUsd` |
-| `finding dropped` | why feedback was discarded (debug level) |
-| `event delivery failed` | consumer trouble, with the attempt count |
+| `review model run complete` | tokens, cache hits, `estimatedCostUsd`     |
+| `finding dropped`           | why feedback was discarded (debug level)   |
+| `event delivery failed`     | consumer trouble, with the attempt count   |
+
 
 ---
+
+
 
 ## Rolling back
 
