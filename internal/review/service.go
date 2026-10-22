@@ -57,6 +57,19 @@ type Options struct {
 	Pricing           llm.Pricing
 	Model             string
 	DryRun            bool
+
+	// OnDryRun, when set, receives the review that dry run suppressed, so a
+	// caller can render it as prose rather than read it as escaped JSON.
+	OnDryRun func(DryRunReport)
+}
+
+// DryRunReport is the review that would have been submitted.
+type DryRunReport struct {
+	Body     string
+	Comments []ghc.ReviewComment
+	Dropped  int
+	Usage    llm.Usage
+	CostUSD  float64
 }
 
 // ClientFactory mints a GitHub client for an installation.
@@ -304,6 +317,15 @@ func (s *Service) execute(
 			log.InfoContext(ctx, "DRY RUN would comment",
 				slog.String("path", c.Path), slog.Int("line", c.Line),
 				slog.String("side", c.Side), slog.String("body", c.Body))
+		}
+		if s.opts.OnDryRun != nil {
+			s.opts.OnDryRun(DryRunReport{
+				Body:     body,
+				Comments: comments,
+				Dropped:  len(decision.Dropped),
+				Usage:    result.Usage,
+				CostUSD:  s.opts.Pricing.Cost(result.Usage),
+			})
 		}
 		return nil
 	}

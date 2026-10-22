@@ -43,6 +43,7 @@ directly rather than kept here.
 ## Contents
 
 - [How it behaves](#how-it-behaves)
+- [Reading a real review](#reading-a-real-review)
 - [Quick start](#quick-start)
 - [Shipping to GCP](#shipping-to-gcp)
 - [GitHub App setup](#github-app-setup)
@@ -128,6 +129,38 @@ second model call, and it always matches what was originally said.
 
 Shuriken submits **exactly one review** per trigger, with event `COMMENT`. It
 can never approve a pull request or request changes.
+
+---
+
+## Reading a real review
+
+Review quality is the one thing the test suite cannot check. Tone, whether the
+concept is named well, whether the patch is rightly withheld — those are only
+knowable by reading the output. So there is a command that reviews a real pull
+request and prints what it would have said:
+
+```bash
+set -a && . ./.env && set +a
+go run ./cmd/shuriken review Shinobi-Open-Source-Academy/shuriken-bot#42
+```
+
+A pull request URL works too. It needs `SHURIKEN_GITHUB_APP_ID`, a private key
+and `ANTHROPIC_API_KEY` — and no webhook, no server, no database, no
+deployment.
+
+**It never posts and never records.** That is not a flag; the command has no
+way to write. The review goes to stdout as Markdown, so it can be read in a
+pager, saved, or diffed between models:
+
+```bash
+go run ./cmd/shuriken review owner/repo#42 > opus.md
+go run ./cmd/shuriken review owner/repo#42 -model claude-sonnet-5-5 > sonnet.md
+diff opus.md sonnet.md
+```
+
+Diagnostics go to stderr, so a redirect captures only the review. `-v` turns
+on the pipeline's own logs, which is how you find out why a pull request was
+skipped.
 
 ---
 

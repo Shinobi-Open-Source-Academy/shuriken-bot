@@ -1,9 +1,13 @@
 // Command shuriken is the SOS Academy review and activity bot.
 //
-// It serves two endpoints:
+// With no arguments it serves two endpoints:
 //
 //	POST /webhook   verified GitHub App webhook deliveries
 //	GET  /healthz   liveness and queue depth
+//
+// The one subcommand runs a single review and prints it, posting nothing:
+//
+//	shuriken review <owner>/<repo>#<number>
 //
 // All configuration comes from the environment. See the README for the full
 // list and for the GitHub App setup.
@@ -39,6 +43,16 @@ import (
 var version = "dev"
 
 func main() {
+	// A subcommand, not a flag, so the server's argument-free invocation is
+	// untouched.
+	if len(os.Args) > 1 && os.Args[1] == "review" {
+		if err := runReview(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "shuriken review: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	if err := run(); err != nil {
 		// The logger may not exist yet, so this goes to stderr directly.
 		// config.Load never puts a secret in an error.

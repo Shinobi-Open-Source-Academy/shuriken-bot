@@ -116,7 +116,24 @@ type Config struct {
 // Load reads configuration from the environment and validates it. In dry-run
 // mode the GitHub, Anthropic and Mongo credentials are optional, so the
 // pipeline can be exercised without any live dependency.
-func Load() (*Config, error) {
+// mode selects which configuration a binary needs; the server and the review
+// command require different things.
+type mode int
+
+const (
+	modeServer mode = iota
+	modeReview
+)
+
+// Load reads the configuration for the webhook server.
+func Load() (*Config, error) { return load(modeServer) }
+
+// LoadForReview reads the configuration for `shuriken review`. It needs no
+// webhook secret and no database, but the App credentials and the API key are
+// mandatory here: a review from the dry-run stub would prove nothing.
+func LoadForReview() (*Config, error) { return load(modeReview) }
+
+func load(m mode) (*Config, error) {
 	c := &Config{
 		Addr:            env("SHURIKEN_ADDR", ":8080"),
 		ShutdownTimeout: envDuration("SHURIKEN_SHUTDOWN_TIMEOUT", 20*time.Second),
@@ -188,35 +205,50 @@ func Load() (*Config, error) {
 		c.ExcludeGlobs = DefaultExcludeGlobs
 	}
 
-	return c, c.validate()
+	return c, c.validate(m)
 }
 
-func (c *Config) validate() error {
+func (c *Config) validate(m mode) error {
 	var errs []error
 
-	// Always required: without the webhook secret we cannot authenticate
-	// anything, which is true in dry-run mode too.
-	if c.WebhookSecret.Empty() {
-		errs = append(errs, errors.New("SHURIKEN_GITHUB_WEBHOOK_SECRET is required"))
-	}
 	if c.BotHandle == "" {
 		errs = append(errs, errors.New("SHURIKEN_BOT_HANDLE must not be empty"))
 	}
 
-	// Credentials for live side effects. Dry-run never calls out, so it can
-	// run without them.
-	if !c.DryRun {
+	switch m {
+	case modeServer:
+		// Without the webhook secret nothing can be authenticated, which is
+		// true in dry-run mode too.
+		if c.WebhookSecret.Empty() {
+			errs = append(errs, errors.New("SHURIKEN_GITHUB_WEBHOOK_SECRET is required"))
+		}
+		// Credentials for live side effects. Dry-run never calls out, so it
+		// can run without them.
+		if !c.DryRun {
+			if c.AppID == 0 {
+				errs = append(errs, errors.New("SHURIKEN_GITHUB_APP_ID is required unless SHURIKEN_DRY_RUN=1"))
+			}
+			if c.PrivateKeyPEM.Empty() {
+				errs = append(errs, errors.New("SHURIKEN_GITHUB_PRIVATE_KEY or SHURIKEN_GITHUB_PRIVATE_KEY_FILE is required unless SHURIKEN_DRY_RUN=1"))
+			}
+			if c.AnthropicAPIKey.Empty() {
+				errs = append(errs, errors.New("ANTHROPIC_API_KEY is required unless SHURIKEN_DRY_RUN=1"))
+			}
+			if c.MongoURI.Empty() {
+				errs = append(errs, errors.New("SHURIKEN_MONGODB_URI is required unless SHURIKEN_DRY_RUN=1"))
+			}
+		}
+
+	case modeReview:
+		// SHURIKEN_DRY_RUN does not relax these.
 		if c.AppID == 0 {
-			errs = append(errs, errors.New("SHURIKEN_GITHUB_APP_ID is required unless SHURIKEN_DRY_RUN=1"))
+			errs = append(errs, errors.New("SHURIKEN_GITHUB_APP_ID is required to review a real pull request"))
 		}
 		if c.PrivateKeyPEM.Empty() {
-			errs = append(errs, errors.New("SHURIKEN_GITHUB_PRIVATE_KEY or SHURIKEN_GITHUB_PRIVATE_KEY_FILE is required unless SHURIKEN_DRY_RUN=1"))
+			errs = append(errs, errors.New("SHURIKEN_GITHUB_PRIVATE_KEY or SHURIKEN_GITHUB_PRIVATE_KEY_FILE is required to review a real pull request"))
 		}
 		if c.AnthropicAPIKey.Empty() {
-			errs = append(errs, errors.New("ANTHROPIC_API_KEY is required unless SHURIKEN_DRY_RUN=1"))
-		}
-		if c.MongoURI.Empty() {
-			errs = append(errs, errors.New("SHURIKEN_MONGODB_URI is required unless SHURIKEN_DRY_RUN=1"))
+			errs = append(errs, errors.New("ANTHROPIC_API_KEY is required to review a real pull request"))
 		}
 	}
 
