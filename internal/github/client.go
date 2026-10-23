@@ -108,6 +108,27 @@ func NewAppClientFactory(appID int64, privateKeyPEM []byte) (*AppClientFactory, 
 	}, nil
 }
 
+// InstallationFor resolves the installation id for one repository, as the App
+// itself. Webhook deliveries carry the id, so only a command line needs this.
+func (f *AppClientFactory) InstallationFor(ctx context.Context, owner, repo string) (int64, error) {
+	atr, err := ghinstallation.NewAppsTransport(http.DefaultTransport, f.appID, f.privateKey)
+	if err != nil {
+		return 0, fmt.Errorf("app transport: %w", err)
+	}
+	api, err := gh.NewClient(gh.WithHTTPClient(&http.Client{Transport: atr, Timeout: 30 * time.Second}))
+	if err != nil {
+		return 0, fmt.Errorf("github client: %w", err)
+	}
+	inst, resp, err := api.Apps.GetRepositoryInstallation(ctx, owner, repo)
+	if err != nil {
+		if resp != nil && resp.StatusCode == http.StatusNotFound {
+			return 0, fmt.Errorf("%w: the App is not installed on %s/%s", ErrNotFound, owner, repo)
+		}
+		return 0, fmt.Errorf("looking up installation for %s/%s: %w", owner, repo, err)
+	}
+	return inst.GetID(), nil
+}
+
 // For returns a Client authenticated as the given installation.
 func (f *AppClientFactory) For(installationID int64) (Client, error) {
 	itr, err := ghinstallation.New(f.base.Transport, f.appID, installationID, f.privateKey)
@@ -234,19 +255,19 @@ func (c *restClient) CreateReview(ctx context.Context, owner, repo string, numbe
 	drafts := make([]*gh.DraftReviewComment, 0, len(comments))
 	for _, cm := range comments {
 		drafts = append(drafts, &gh.DraftReviewComment{
-			Path: gh.Ptr(cm.Path),
-			Line: gh.Ptr(cm.Line),
-			Side: gh.Ptr(cm.Side),
-			Body: gh.Ptr(cm.Body),
+			Path: new(cm.Path),
+			Line: new(cm.Line),
+			Side: new(cm.Side),
+			Body: new(cm.Body),
 		})
 	}
 
 	// event COMMENT only. Shuriken is a mentor, not a gatekeeper: it must never
 	// be able to approve or block a pull request.
 	req := &gh.PullRequestReviewRequest{
-		CommitID: gh.Ptr(commitSHA),
-		Body:     gh.Ptr(body),
-		Event:    gh.Ptr("COMMENT"),
+		CommitID: new(commitSHA),
+		Body:     new(body),
+		Event:    new("COMMENT"),
 		Comments: drafts,
 	}
 	review, _, err := c.api.PullRequests.CreateReview(ctx, owner, repo, number, req)

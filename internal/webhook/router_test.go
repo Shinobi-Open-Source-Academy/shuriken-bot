@@ -30,22 +30,22 @@ func testRouter() *AppRouter {
 }
 
 var (
-	user  = &gh.User{ID: gh.Ptr(int64(101)), Login: gh.Ptr("alice"), Type: gh.Ptr("User")}
-	bot   = &gh.User{ID: gh.Ptr(int64(9)), Login: gh.Ptr("shuriken-bot[bot]"), Type: gh.Ptr("Bot")}
+	user  = &gh.User{ID: new(int64(101)), Login: new("alice"), Type: new("User")}
+	bot   = &gh.User{ID: new(int64(9)), Login: new("shuriken-bot[bot]"), Type: new("Bot")}
 	rrepo = &gh.Repository{
-		ID: gh.Ptr(int64(7001)), Name: gh.Ptr("dojo"), FullName: gh.Ptr("sos-academy/dojo"),
-		Owner: &gh.User{Login: gh.Ptr("sos-academy")},
+		ID: new(int64(7001)), Name: new("dojo"), FullName: new("sos-academy/dojo"),
+		Owner: &gh.User{Login: new("sos-academy")},
 	}
 )
 
 func comment(id int64, u *gh.User, body string) *gh.IssueComment {
-	return &gh.IssueComment{ID: gh.Ptr(id), User: u, Body: gh.Ptr(body)}
+	return &gh.IssueComment{ID: new(id), User: u, Body: new(body)}
 }
 
 func rissue(number int, isPR bool) *gh.Issue {
-	i := &gh.Issue{ID: gh.Ptr(int64(5001)), Number: gh.Ptr(number), User: user}
+	i := &gh.Issue{ID: new(int64(5001)), Number: new(number), User: user}
 	if isPR {
-		i.PullRequestLinks = &gh.PullRequestLinks{URL: gh.Ptr("https://api.github.com/pr")}
+		i.PullRequestLinks = &gh.PullRequestLinks{URL: new("https://api.github.com/pr")}
 	}
 	return i
 }
@@ -74,7 +74,7 @@ func TestRouteCommands(t *testing.T) {
 		{
 			name: "review on a pull request",
 			payload: &gh.IssueCommentEvent{
-				Action: gh.Ptr("created"), Repo: rrepo, Issue: rissue(2, true),
+				Action: new("created"), Repo: rrepo, Issue: rissue(2, true),
 				Comment: comment(8888, user, "@shuriken-bot review"),
 			},
 			// The comment is also recorded as activity because it mentions us.
@@ -83,7 +83,7 @@ func TestRouteCommands(t *testing.T) {
 		{
 			name: "hint on a pull request",
 			payload: &gh.IssueCommentEvent{
-				Action: gh.Ptr("created"), Repo: rrepo, Issue: rissue(2, true),
+				Action: new("created"), Repo: rrepo, Issue: rissue(2, true),
 				Comment: comment(8888, user, "@shuriken-bot hint"),
 			},
 			want: []string{"record-activity", "review"},
@@ -91,7 +91,7 @@ func TestRouteCommands(t *testing.T) {
 		{
 			name: "explain on a pull request",
 			payload: &gh.IssueCommentEvent{
-				Action: gh.Ptr("created"), Repo: rrepo, Issue: rissue(2, true),
+				Action: new("created"), Repo: rrepo, Issue: rissue(2, true),
 				Comment: comment(8888, user, "@shuriken-bot explain"),
 			},
 			want: []string{"record-activity", "explain"},
@@ -101,7 +101,7 @@ func TestRouteCommands(t *testing.T) {
 			// so the thread does not fill up with bot chatter.
 			name: "bare mention gets a reaction",
 			payload: &gh.IssueCommentEvent{
-				Action: gh.Ptr("created"), Repo: rrepo, Issue: rissue(1, false),
+				Action: new("created"), Repo: rrepo, Issue: rissue(1, false),
 				Comment: comment(8888, user, "cc @shuriken-bot"),
 			},
 			want: []string{"record-activity", "ack"},
@@ -111,7 +111,7 @@ func TestRouteCommands(t *testing.T) {
 			// gets the short help reply.
 			name: "unrecognised trailing word gets help",
 			payload: &gh.IssueCommentEvent{
-				Action: gh.Ptr("created"), Repo: rrepo, Issue: rissue(1, false),
+				Action: new("created"), Repo: rrepo, Issue: rissue(1, false),
 				Comment: comment(8888, user, "@shuriken-bot thanks"),
 			},
 			want: []string{"record-activity", "reply"},
@@ -119,7 +119,7 @@ func TestRouteCommands(t *testing.T) {
 		{
 			name: "unknown command gets help",
 			payload: &gh.IssueCommentEvent{
-				Action: gh.Ptr("created"), Repo: rrepo, Issue: rissue(1, false),
+				Action: new("created"), Repo: rrepo, Issue: rissue(1, false),
 				Comment: comment(8888, user, "@shuriken-bot frobnicate"),
 			},
 			want: []string{"record-activity", "reply"},
@@ -128,7 +128,7 @@ func TestRouteCommands(t *testing.T) {
 			// review only makes sense on a pull request.
 			name: "review asked for on an issue",
 			payload: &gh.IssueCommentEvent{
-				Action: gh.Ptr("created"), Repo: rrepo, Issue: rissue(1, false),
+				Action: new("created"), Repo: rrepo, Issue: rissue(1, false),
 				Comment: comment(8888, user, "@shuriken-bot review"),
 			},
 			want: []string{"record-activity", "reply"},
@@ -136,7 +136,7 @@ func TestRouteCommands(t *testing.T) {
 		{
 			name: "no mention does nothing",
 			payload: &gh.IssueCommentEvent{
-				Action: gh.Ptr("created"), Repo: rrepo, Issue: rissue(2, true),
+				Action: new("created"), Repo: rrepo, Issue: rissue(2, true),
 				Comment: comment(8888, user, "looks good"),
 			},
 			want: nil,
@@ -145,7 +145,7 @@ func TestRouteCommands(t *testing.T) {
 			// Never respond to a bot, including ourselves.
 			name: "our own comment is ignored",
 			payload: &gh.IssueCommentEvent{
-				Action: gh.Ptr("created"), Repo: rrepo, Issue: rissue(2, true),
+				Action: new("created"), Repo: rrepo, Issue: rissue(2, true),
 				Comment: comment(8888, bot, "@shuriken-bot review"),
 			},
 			want: nil,
@@ -153,8 +153,8 @@ func TestRouteCommands(t *testing.T) {
 		{
 			name: "the review label triggers a review",
 			payload: &gh.PullRequestEvent{
-				Action: gh.Ptr("labeled"), Repo: rrepo,
-				PullRequest: &gh.PullRequest{ID: gh.Ptr(int64(6001)), Number: gh.Ptr(2), User: user},
+				Action: new("labeled"), Repo: rrepo,
+				PullRequest: &gh.PullRequest{ID: new(int64(6001)), Number: new(2), User: user},
 				Label:       &gh.Label{Name: "needs-review"},
 				Sender:      user,
 			},
@@ -163,8 +163,8 @@ func TestRouteCommands(t *testing.T) {
 		{
 			name: "another label does nothing",
 			payload: &gh.PullRequestEvent{
-				Action: gh.Ptr("labeled"), Repo: rrepo,
-				PullRequest: &gh.PullRequest{ID: gh.Ptr(int64(6001)), Number: gh.Ptr(2), User: user},
+				Action: new("labeled"), Repo: rrepo,
+				PullRequest: &gh.PullRequest{ID: new(int64(6001)), Number: new(2), User: user},
 				Label:       &gh.Label{Name: "documentation"},
 				Sender:      user,
 			},
@@ -179,10 +179,10 @@ func TestRouteCommands(t *testing.T) {
 		{
 			name: "an inline comment mentioning us only acknowledges",
 			payload: &gh.PullRequestReviewCommentEvent{
-				Action: gh.Ptr("created"), Repo: rrepo,
-				PullRequest: &gh.PullRequest{ID: gh.Ptr(int64(6001)), Number: gh.Ptr(2), User: user},
+				Action: new("created"), Repo: rrepo,
+				PullRequest: &gh.PullRequest{ID: new(int64(6001)), Number: new(2), User: user},
 				Comment: &gh.PullRequestComment{
-					ID: gh.Ptr(int64(9001)), User: user, Body: gh.Ptr("@shuriken-bot review"),
+					ID: new(int64(9001)), User: user, Body: new("@shuriken-bot review"),
 				},
 			},
 			want: []string{"record-activity", "ack"},
@@ -190,8 +190,8 @@ func TestRouteCommands(t *testing.T) {
 		{
 			name: "pr opened records activity only",
 			payload: &gh.PullRequestEvent{
-				Action: gh.Ptr("opened"), Repo: rrepo,
-				PullRequest: &gh.PullRequest{ID: gh.Ptr(int64(6001)), Number: gh.Ptr(2), User: user},
+				Action: new("opened"), Repo: rrepo,
+				PullRequest: &gh.PullRequest{ID: new(int64(6001)), Number: new(2), User: user},
 			},
 			want: []string{"record-activity"},
 		},

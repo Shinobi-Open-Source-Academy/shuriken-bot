@@ -253,7 +253,7 @@ func (c *anthropicClient) run(ctx context.Context, req Request, isRetry bool) (*
 	}
 
 	params := anthropic.MessageNewParams{
-		Model:     anthropic.Model(c.opts.Model),
+		Model:     c.opts.Model,
 		MaxTokens: c.opts.MaxOutputTokens,
 		System:    system,
 		Messages: []anthropic.MessageParam{
@@ -398,7 +398,7 @@ func parseOutput(msg *anthropic.Message) (ReviewOutput, error) {
 
 	var out ReviewOutput
 	if err := json.Unmarshal([]byte(raw), &out); err != nil {
-		return ReviewOutput{}, fmt.Errorf("%w: %v", errMalformedOutput, err)
+		return ReviewOutput{}, fmt.Errorf("%w: %w", errMalformedOutput, err)
 	}
 	return out, nil
 }

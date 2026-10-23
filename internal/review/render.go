@@ -28,8 +28,8 @@ func severityLabel(s string) string {
 func RenderComment(f llm.Finding, mode Mode, tier Tier) string {
 	var b strings.Builder
 
-	b.WriteString(fmt.Sprintf("**%s** · `%s` · `%s`\n\n", strings.TrimSpace(f.Title),
-		severityLabel(f.Severity), normalizeConcept(f.Concept)))
+	fmt.Fprintf(&b, "**%s** · `%s` · `%s`\n\n", strings.TrimSpace(f.Title),
+		severityLabel(f.Severity), normalizeConcept(f.Concept))
 	b.WriteString(strings.TrimSpace(f.Explanation))
 	b.WriteString("\n")
 
@@ -47,8 +47,8 @@ func RenderComment(f llm.Finding, mode Mode, tier Tier) string {
 	return b.String()
 }
 
-// ReviewBodyInput is what the summary comment needs.
-type ReviewBodyInput struct {
+// BodyInput is what the summary comment needs.
+type BodyInput struct {
 	Summary        string
 	Mode           Mode
 	Tier           Tier
@@ -59,7 +59,7 @@ type ReviewBodyInput struct {
 }
 
 // RenderReviewBody builds the single review summary comment.
-func RenderReviewBody(in ReviewBodyInput) string {
+func RenderReviewBody(in BodyInput) string {
 	var b strings.Builder
 
 	summary := strings.TrimSpace(in.Summary)
@@ -70,8 +70,8 @@ func RenderReviewBody(in ReviewBodyInput) string {
 	b.WriteString("\n")
 
 	if len(in.SkippedForSize) > 0 {
-		b.WriteString(fmt.Sprintf("\n<details><summary>%d file(s) were not reviewed (size limit)</summary>\n\n",
-			len(in.SkippedForSize)))
+		fmt.Fprintf(&b, "\n<details><summary>%d file(s) were not reviewed (size limit)</summary>\n\n",
+			len(in.SkippedForSize))
 		for _, p := range clipList(in.SkippedForSize, 25) {
 			b.WriteString("- `" + p + "`\n")
 		}
@@ -84,8 +84,8 @@ func RenderReviewBody(in ReviewBodyInput) string {
 
 	// Only advertise explain when there is actually something held back.
 	if in.HasWithheldFix && in.Tier != TierInsider {
-		b.WriteString(fmt.Sprintf("\n---\n\nAsk `@%s explain` if you want the full reasoning and the fixes I held back.\n",
-			in.BotHandle))
+		fmt.Fprintf(&b, "\n---\n\nAsk `@%s explain` if you want the full reasoning and the fixes I held back.\n",
+			in.BotHandle)
 	}
 
 	return b.String()
@@ -102,9 +102,9 @@ func RenderExplain(findings []*store.Finding) string {
 	b.WriteString("Here is the full reasoning behind my last review.\n")
 
 	for _, f := range findings {
-		b.WriteString(fmt.Sprintf("\n---\n\n### %s\n\n`%s` · `%s` · `%s:%d`\n\n",
+		fmt.Fprintf(&b, "\n---\n\n### %s\n\n`%s` · `%s` · `%s:%d`\n\n",
 			strings.TrimSpace(f.Title), severityLabel(string(f.Severity)),
-			normalizeConcept(f.Concept), f.Path, f.Line))
+			normalizeConcept(f.Concept), f.Path, f.Line)
 
 		if e := strings.TrimSpace(f.Explanation); e != "" {
 			b.WriteString(e)

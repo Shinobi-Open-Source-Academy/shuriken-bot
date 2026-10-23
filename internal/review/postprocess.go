@@ -15,6 +15,8 @@ import (
 // quality can be tuned without guesswork.
 type DropReason string
 
+// The reasons a finding is not posted. Logged at debug level so review
+// quality can be tuned by looking at what is being discarded.
 const (
 	DropInvalidShape  DropReason = "invalid_shape"
 	DropLowConfidence DropReason = "low_confidence"

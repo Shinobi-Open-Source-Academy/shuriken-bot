@@ -1,0 +1,124 @@
+name: Deploy
+
+# Builds the image and deploys it to Cloud Run on every push to main. Mirrors
+# the platform repo's deploy-server.yml deliberately: same project, same
+# Artifact Registry, same keyless Workload Identity Federation pattern, so
+# there is one deployment model to understand rather than two.
+#
+# Auth is keyless. GitHub's OIDC token is exchanged for short-lived GCP
+# credentials, scoped by the WIF provider's attribute condition to this exact
+# repository and the main branch. No service account JSON key is stored as a
+# GitHub secret.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - cmd/**
+      - internal/**
+      - go.mod
+      - go.sum
+      - Dockerfile
+      - .github/workflows/deploy.yml
+  workflow_dispatch: {} # manual re-deploy, e.g. after a Secret Manager rotation
+
+concurrency:
+  group: deploy-shuriken
+  cancel-in-progress: false # never cancel a deploy mid-flight
+
+permissions:
+  contents: read
+  id-token: write # required to mint the OIDC token WIF exchanges
+
+env:
+  PROJECT_ID: sos-academy-483918
+  REGION: us-central1
+  SERVICE: shuriken
+  REPOSITORY: sos-academy
+  WORKLOAD_IDENTITY_PROVIDER: projects/194253303838/locations/global/workloadIdentityPools/github-actions-pool/providers/github-actions-provider
+  DEPLOY_SA: github-deployer@sos-academy-483918.iam.gserviceaccount.com
+
+jobs:
+  deploy:
+    name: Build, push, deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.DEPLOY_SA }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push (amd64 — Cloud Run requirement)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            VERSION=${{ github.sha }}
+          tags: |
+            ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/shuriken:${{ github.sha }}
+            ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/shuriken:latest
+          cache-from: type=gha,scope=shuriken
+          cache-to: type=gha,mode=max,scope=shuriken,ignore-error=true
+
+      - name: Deploy to Cloud Run
+        id: deploy
+        run: |
+          gcloud run deploy "$SERVICE" \
+            --image="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/shuriken:${{ github.sha }}" \
+            --region="$REGION"
+          echo "url=$(gcloud run services describe "$SERVICE" --region="$REGION" --format='value(status.url)')" >> "$GITHUB_OUTPUT"
+        # Deliberately no --set-env-vars/--set-secrets here. `gcloud run deploy
+        # --image=...` with no other config flags carries the previous
+        # revision's env vars and secret references over unchanged and only
+        # swaps the image. Config changes go through the CLI by hand, per
+        # the first manual deploy, and this workflow preserves whatever that left.
+
+      - name: Smoke test the new revision
+        run: |
+          url="${{ steps.deploy.outputs.url }}"
+          body=$(curl -s --max-time 30 "$url/healthz")
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 "$url/healthz")
+          if [ "$code" != "200" ]; then
+            echo "::error::/healthz returned $code, expected 200"
+            exit 1
+          fi
+          echo "✅ $url/healthz responded 200: $body"
+
+          # A dead-lettered event means a consumer rejected something, or was
+          # unreachable past the attempt budget, and will never learn about it
+          # without a replay. Surface it on every deploy rather than waiting
+          # for someone to look.
+          dead=$(printf '%s' "$body" | sed -n 's/.*"outboxDeadLettered":\([0-9]*\).*/\1/p')
+          if [ -n "$dead" ] && [ "$dead" != "0" ]; then
+            echo "::warning::$dead dead-lettered event(s) in the outbox — a consumer is rejecting or unreachable"
+          fi
+
+      - name: Verify the webhook endpoint rejects an unsigned delivery
+        run: |
+          # Cheap proof that the deployed revision is the real service and its
+          # signature check is active, without sending it a valid event.
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 \
+            -X POST "${{ steps.deploy.outputs.url }}/webhook" \
+            -H 'Content-Type: application/json' \
+            -H 'X-GitHub-Event: ping' --data '{}')
+          if [ "$code" != "401" ]; then
+            echo "::error::unsigned delivery returned $code, expected 401"
+            exit 1
+          fi
+          echo "✅ unsigned delivery rejected with 401"

@@ -1,0 +1,22 @@
+{
+  // Markdown in this repo is hand-wrapped at ~80 columns and is reviewed as
+  // diffs. A format-on-save that reflows prose turns a four-line edit into a
+  // hundred-line diff, and the formatter that ran here also rewrote
+  // [`text`](url) as `[text](url)`, which renders as literal code instead of a
+  // link. Formatting is therefore off for Markdown in this workspace; run it
+  // deliberately if you want it.
+  "[markdown]": {
+    "editor.formatOnSave": false,
+    "editor.formatOnPaste": false,
+    "editor.codeActionsOnSave": {}
+  },
+
+  // Go formatting, on the other hand, is enforced by CI (gofmt) and should stay on.
+  "[go]": {
+    "editor.formatOnSave": true,
+    "editor.defaultFormatter": "golang.go"
+  },
+  "gopls": {
+    "formatting.gofumpt": false
+  }
+}

@@ -121,8 +121,6 @@ func (s *Store) CompleteReviewRun(ctx context.Context, run *store.ReviewRun) err
 type findingDoc struct {
 	ID           bson.ObjectID  `bson:"_id,omitempty"`
 	Actor        store.Actor    `bson:"actor"`
-	User         *bson.ObjectID `bson:"user,omitempty"`
-	Unlinked     bool           `bson:"unlinked"`
 	Repo         store.Repo     `bson:"repo"`
 	PR           store.PRRef    `bson:"pr"`
 	ReviewID     int64          `bson:"reviewId,omitempty"`
@@ -150,8 +148,6 @@ func (s *Store) SaveFindings(ctx context.Context, findings []*store.Finding) err
 	for _, f := range findings {
 		docs = append(docs, findingDoc{
 			Actor:        f.Actor,
-			User:         objectIDPtr(f.UserID),
-			Unlinked:     f.Unlinked,
 			Repo:         f.Repo,
 			PR:           f.PR,
 			ReviewID:     f.ReviewID,
@@ -210,7 +206,9 @@ func (s *Store) LatestReviewFindings(ctx context.Context, prGithubID int64) ([]*
 	if err != nil {
 		return nil, fmt.Errorf("latest review findings: %w", err)
 	}
-	defer cur.Close(ctx)
+	// Close only reports a failure to release a server-side cursor, which
+	// there is no useful recovery from at this point.
+	defer func() { _ = cur.Close(ctx) }()
 
 	var out []*store.Finding
 	for cur.Next(ctx) {
@@ -221,7 +219,6 @@ func (s *Store) LatestReviewFindings(ctx context.Context, prGithubID int64) ([]*
 		f := &store.Finding{
 			ID:           doc.ID.Hex(),
 			Actor:        doc.Actor,
-			Unlinked:     doc.Unlinked,
 			Repo:         doc.Repo,
 			PR:           doc.PR,
 			ReviewID:     doc.ReviewID,
@@ -238,9 +235,6 @@ func (s *Store) LatestReviewFindings(ctx context.Context, prGithubID int64) ([]*
 			SuggestedFix: doc.SuggestedFix,
 			Revealed:     doc.Revealed,
 			PostedAt:     doc.PostedAt,
-		}
-		if doc.User != nil {
-			f.UserID = doc.User.Hex()
 		}
 		out = append(out, f)
 	}

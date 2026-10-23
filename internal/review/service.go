@@ -11,6 +11,7 @@ import (
 	"github.com/sos-academy/shuriken/internal/diff"
 	ghc "github.com/sos-academy/shuriken/internal/github"
 	"github.com/sos-academy/shuriken/internal/llm"
+	"github.com/sos-academy/shuriken/internal/publisher"
 	"github.com/sos-academy/shuriken/internal/store"
 )
 
@@ -56,6 +57,19 @@ type Options struct {
 	Pricing           llm.Pricing
 	Model             string
 	DryRun            bool
+
+	// OnDryRun, when set, receives the review that dry run suppressed, so a
+	// caller can render it as prose rather than read it as escaped JSON.
+	OnDryRun func(DryRunReport)
+}
+
+// DryRunReport is the review that would have been submitted.
+type DryRunReport struct {
+	Body     string
+	Comments []ghc.ReviewComment
+	Dropped  int
+	Usage    llm.Usage
+	CostUSD  float64
 }
 
 // ClientFactory mints a GitHub client for an installation.
@@ -281,7 +295,7 @@ func (s *Service) execute(
 		})
 	}
 
-	body := RenderReviewBody(ReviewBodyInput{
+	body := RenderReviewBody(BodyInput{
 		Summary:        result.Output.Summary,
 		Mode:           job.Mode,
 		Tier:           tier,
@@ -304,6 +318,15 @@ func (s *Service) execute(
 				slog.String("path", c.Path), slog.Int("line", c.Line),
 				slog.String("side", c.Side), slog.String("body", c.Body))
 		}
+		if s.opts.OnDryRun != nil {
+			s.opts.OnDryRun(DryRunReport{
+				Body:     body,
+				Comments: comments,
+				Dropped:  len(decision.Dropped),
+				Usage:    result.Usage,
+				CostUSD:  s.opts.Pricing.Cost(result.Usage),
+			})
+		}
 		return nil
 	}
 
@@ -319,9 +342,13 @@ func (s *Service) execute(
 	run.FinishedAt = time.Now().UTC()
 
 	if s.store != nil {
-		findings := s.toStoredFindings(ctx, pr, job, submitted, decision.Kept)
+		findings := s.toStoredFindings(pr, job, submitted, decision.Kept)
 		if err := s.store.SaveFindings(ctx, findings); err != nil {
 			log.ErrorContext(ctx, "failed to save findings", slog.Any("error", err))
+		} else if err := s.enqueueFindings(ctx, findings); err != nil {
+			// The findings are stored, so nothing is lost; the consumer just
+			// does not learn about them until the next successful enqueue.
+			log.ErrorContext(ctx, "failed to queue findings for delivery", slog.Any("error", err))
 		}
 		if err := s.store.CompleteReviewRun(ctx, run); err != nil {
 			log.ErrorContext(ctx, "failed to complete run record", slog.Any("error", err))
@@ -337,7 +364,6 @@ func (s *Service) execute(
 }
 
 func (s *Service) toStoredFindings(
-	ctx context.Context,
 	pr *ghc.PullRequest,
 	job Job,
 	submitted *ghc.SubmittedReview,
@@ -345,22 +371,12 @@ func (s *Service) toStoredFindings(
 ) []*store.Finding {
 	author := store.Actor{GithubID: pr.AuthorID, Login: pr.Author}
 
-	var userID string
-	unlinked := true
-	if s.store != nil {
-		if u, err := s.store.FindPlatformUser(ctx, author.GithubID, author.Login); err == nil && u != nil {
-			userID, unlinked = u.ID, false
-		}
-	}
-
 	now := time.Now().UTC()
 	out := make([]*store.Finding, 0, len(kept))
 	for _, f := range kept {
 		out = append(out, &store.Finding{
-			Actor:    author,
-			UserID:   userID,
-			Unlinked: unlinked,
-			Repo:     store.Repo{Owner: job.Owner, Name: job.RepoName, FullName: job.FullName()},
+			Actor: author,
+			Repo:  store.Repo{Owner: job.Owner, Name: job.RepoName, FullName: job.FullName()},
 			PR: store.PRRef{
 				Number: pr.Number, GithubID: pr.GithubID, URL: pr.URL, HeadSHA: pr.HeadSHA,
 			},
@@ -466,4 +482,22 @@ func redactError(err error) string {
 		msg = msg[:1000]
 	}
 	return msg
+}
+
+// enqueueFindings queues each posted finding for delivery to the consumer.
+// Concept and severity are the fields that make recurring-feedback tracking
+// possible downstream, so they travel with every event.
+func (s *Service) enqueueFindings(ctx context.Context, findings []*store.Finding) error {
+	if len(findings) == 0 {
+		return nil
+	}
+	events := make([]*store.Outbound, 0, len(findings))
+	for _, f := range findings {
+		event, err := publisher.FindingEvent(f)
+		if err != nil {
+			return err
+		}
+		events = append(events, event)
+	}
+	return s.store.Enqueue(ctx, events)
 }

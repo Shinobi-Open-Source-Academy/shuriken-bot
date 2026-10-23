@@ -5,14 +5,21 @@ package logging
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"os"
 	"strings"
 )
 
-// New returns a JSON logger at the requested level, wrapped in a handler that
-// redacts registered secret values anywhere they appear.
+// New returns a JSON logger on stdout at the requested level, wrapped in a
+// handler that redacts registered secret values anywhere they appear.
 func New(level string, secrets []string) *slog.Logger {
+	return NewTo(os.Stdout, level, secrets)
+}
+
+// NewTo is New writing somewhere other than stdout, so a command can keep
+// stdout clean for its own output.
+func NewTo(w io.Writer, level string, secrets []string) *slog.Logger {
 	var lvl slog.Level
 	switch strings.ToLower(level) {
 	case "debug":
@@ -25,7 +32,7 @@ func New(level string, secrets []string) *slog.Logger {
 		lvl = slog.LevelInfo
 	}
 
-	base := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: lvl})
+	base := slog.NewJSONHandler(w, &slog.HandlerOptions{Level: lvl})
 	return slog.New(&redactingHandler{inner: base, secrets: nonTrivial(secrets)})
 }
 
@@ -44,8 +51,6 @@ func nonTrivial(in []string) []string {
 type redactingHandler struct {
 	inner   slog.Handler
 	secrets []string
-	attrs   []slog.Attr
-	groups  []string
 }
 
 func (h *redactingHandler) Enabled(ctx context.Context, l slog.Level) bool {

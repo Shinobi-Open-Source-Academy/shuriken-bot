@@ -1,6 +1,11 @@
 // Package store defines Shuriken's persistence contract and the domain types
 // that cross it. Nothing here imports a database driver, so the rest of the
 // application can be tested against an in-memory fake.
+//
+// Shuriken owns its database outright and holds no reference to any academy
+// platform record. Contributors are identified by GitHub id and login only;
+// resolving one to a platform account is the consumer's job, done at read
+// time. See docs/adr/0005-shuriken-owns-its-database.md.
 package store
 
 import (
@@ -16,6 +21,8 @@ var ErrDuplicate = errors.New("store: duplicate record")
 // ActivityType enumerates the contributor actions Shuriken records in v0.
 type ActivityType string
 
+// The activity types Shuriken records. These strings are persisted, so
+// changing one is a data migration, not a rename.
 const (
 	IssueOpened       ActivityType = "issue_opened"
 	PROpened          ActivityType = "pr_opened"
@@ -30,6 +37,7 @@ const (
 // Severity ranks a review finding. Order matters: see Rank.
 type Severity string
 
+// The severities a finding may carry, highest first.
 const (
 	SeverityHigh   Severity = "high"
 	SeverityMedium Severity = "medium"
@@ -84,29 +92,19 @@ type Object struct {
 
 // Activity is one normalized contributor action. It deliberately holds no
 // comment bodies and no diffs: identifiers and URLs only.
+//
+// There is no platform user id and no "unlinked" flag. Shuriken does not know
+// whether a GitHub account belongs to a platform member and does not need to.
 type Activity struct {
 	DedupeKey  string         `bson:"dedupeKey"           json:"dedupeKey"`
 	Type       ActivityType   `bson:"type"                json:"type"`
 	Actor      Actor          `bson:"actor"               json:"actor"`
-	UserID     string         `bson:"-"                   json:"userId,omitempty"`
-	Unlinked   bool           `bson:"unlinked"            json:"unlinked"`
 	Repo       Repo           `bson:"repo"                json:"repo"`
-	ProjectID  string         `bson:"-"                   json:"projectId,omitempty"`
 	Subject    Subject        `bson:"subject"             json:"subject"`
 	Object     Object         `bson:"object,omitempty"    json:"object,omitempty"`
 	OccurredAt time.Time      `bson:"occurredAt"          json:"occurredAt"`
 	Metadata   map[string]any `bson:"metadata,omitempty"  json:"metadata,omitempty"`
 	DeliveryID string         `bson:"deliveryId,omitempty" json:"deliveryId,omitempty"`
-}
-
-// PlatformUser is the subset of an academy platform user Shuriken reads. It is
-// never written: Shuriken has find-only access to the users collection.
-type PlatformUser struct {
-	ID          string
-	Email       string
-	Name        string
-	GithubID    int64
-	GithubLogin string
 }
 
 // PRRef identifies a pull request under review.
@@ -118,12 +116,10 @@ type PRRef struct {
 }
 
 // Finding is one piece of review feedback that was actually posted. Concept and
-// Severity are the fields Kunai will aggregate over, so they are always set.
+// Severity are what consumers aggregate over, so they are always set.
 type Finding struct {
 	ID           string    `bson:"-"                       json:"id,omitempty"`
 	Actor        Actor     `bson:"actor"                   json:"actor"`
-	UserID       string    `bson:"-"                       json:"userId,omitempty"`
-	Unlinked     bool      `bson:"unlinked"                json:"unlinked"`
 	Repo         Repo      `bson:"repo"                    json:"repo"`
 	PR           PRRef     `bson:"pr"                      json:"pr"`
 	ReviewID     int64     `bson:"reviewId,omitempty"      json:"reviewId,omitempty"`
@@ -184,6 +180,8 @@ type ReviewRun struct {
 
 // Store is Shuriken's full persistence surface.
 type Store interface {
+	Outbox
+
 	// MarkDelivery records a webhook delivery id. It returns false when the id
 	// was already present, meaning this is a redelivery and can be dropped.
 	MarkDelivery(ctx context.Context, deliveryID, event string) (fresh bool, err error)
@@ -191,15 +189,6 @@ type Store interface {
 	// RecordActivity inserts an activity. It returns ErrDuplicate when
 	// DedupeKey already exists.
 	RecordActivity(ctx context.Context, a *Activity) error
-
-	// FindPlatformUser resolves a GitHub identity to an academy platform user.
-	// It matches on github id first, then login. A nil user with a nil error
-	// means no platform account is linked yet.
-	FindPlatformUser(ctx context.Context, githubID int64, login string) (*PlatformUser, error)
-
-	// ProjectIDForRepo maps "owner/name" to a platform project id, or "" when
-	// the repo is not a tracked project.
-	ProjectIDForRepo(ctx context.Context, fullName string) (string, error)
 
 	// ClaimReviewRun atomically reserves a run. It returns false when a run for
 	// the same command comment already exists, which is how we avoid answering
@@ -221,4 +210,62 @@ type Store interface {
 
 	// Close releases the underlying connection.
 	Close(ctx context.Context) error
+}
+
+// Outbound event types published to a consumer.
+const (
+	EventActivityRecorded = "activity.recorded"
+	EventFindingPosted    = "review.finding_posted"
+)
+
+// Outbound is one event queued for delivery to a consumer.
+//
+// Because the webhook is the only way data reaches a consumer, delivery cannot
+// be best-effort: an event lost here is lost permanently. So events are
+// written to the database in the same operation that records them and drained
+// by a publisher afterwards — the transactional outbox pattern. A crash
+// between recording and publishing costs a retry, not an event.
+type Outbound struct {
+	ID string `bson:"-" json:"id,omitempty"`
+	// Type is one of the Event* constants.
+	Type string `bson:"type" json:"type"`
+	// IdempotencyKey lets a consumer dedupe. For an activity it is the
+	// activity's DedupeKey; for a finding it is the posted comment id.
+	IdempotencyKey string `bson:"idempotencyKey" json:"idempotencyKey"`
+	// Payload is the already-serialised `data` member of the envelope, stored
+	// as bytes so the publisher never re-marshals and risk changing it.
+	Payload []byte `bson:"payload" json:"-"`
+	// OccurredAt is when the underlying thing happened, not when it was queued.
+	OccurredAt time.Time `bson:"occurredAt" json:"occurredAt"`
+
+	Attempts      int        `bson:"attempts"                json:"attempts"`
+	NextAttemptAt time.Time  `bson:"nextAttemptAt"           json:"nextAttemptAt"`
+	PublishedAt   *time.Time `bson:"publishedAt,omitempty"   json:"publishedAt,omitempty"`
+	LastError     string     `bson:"lastError,omitempty"     json:"lastError,omitempty"`
+	// DeadLetteredAt is set once attempts are exhausted. The row is kept, not
+	// deleted, so it can be inspected and replayed.
+	DeadLetteredAt *time.Time `bson:"deadLetteredAt,omitempty" json:"deadLetteredAt,omitempty"`
+	CreatedAt      time.Time  `bson:"createdAt"                json:"createdAt"`
+}
+
+// Outbox is the delivery queue for outbound events.
+type Outbox interface {
+	// Enqueue adds events to the outbox. Duplicate idempotency keys are
+	// ignored, so a retried job does not queue an event twice.
+	Enqueue(ctx context.Context, events []*Outbound) error
+
+	// ClaimDue atomically leases up to limit events whose NextAttemptAt has
+	// passed, so concurrent publishers do not send the same event. The lease
+	// is released by MarkPublished or MarkFailed.
+	ClaimDue(ctx context.Context, limit int, leaseFor time.Duration) ([]*Outbound, error)
+
+	// MarkPublished records a successful delivery.
+	MarkPublished(ctx context.Context, id string) error
+
+	// MarkFailed records a failed attempt and schedules the next one. When
+	// attempts reaches maxAttempts the event is dead-lettered instead.
+	MarkFailed(ctx context.Context, id string, cause string, retryAfter time.Duration, maxAttempts int) error
+
+	// OutboxDepth reports pending and dead-lettered counts for /healthz.
+	OutboxDepth(ctx context.Context) (pending, deadLettered int64, err error)
 }

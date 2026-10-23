@@ -1,9 +1,13 @@
 // Command shuriken is the SOS Academy review and activity bot.
 //
-// It serves two endpoints:
+// With no arguments it serves two endpoints:
 //
 //	POST /webhook   verified GitHub App webhook deliveries
 //	GET  /healthz   liveness and queue depth
+//
+// The one subcommand runs a single review and prints it, posting nothing:
+//
+//	shuriken review <owner>/<repo>#<number>
 //
 // All configuration comes from the environment. See the README for the full
 // list and for the GitHub App setup.
@@ -25,6 +29,7 @@ import (
 	ghc "github.com/sos-academy/shuriken/internal/github"
 	"github.com/sos-academy/shuriken/internal/llm"
 	"github.com/sos-academy/shuriken/internal/logging"
+	"github.com/sos-academy/shuriken/internal/publisher"
 	"github.com/sos-academy/shuriken/internal/review"
 	"github.com/sos-academy/shuriken/internal/store"
 	"github.com/sos-academy/shuriken/internal/store/mongostore"
@@ -32,7 +37,22 @@ import (
 	"github.com/sos-academy/shuriken/internal/worker"
 )
 
+// version is set at build time via -ldflags "-X main.version=...". The deploy
+// workflow passes the commit SHA, so a running revision can be identified from
+// its first log line.
+var version = "dev"
+
 func main() {
+	// A subcommand, not a flag, so the server's argument-free invocation is
+	// untouched.
+	if len(os.Args) > 1 && os.Args[1] == "review" {
+		if err := runReview(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "shuriken review: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	if err := run(); err != nil {
 		// The logger may not exist yet, so this goes to stderr directly.
 		// config.Load never puts a secret in an error.
@@ -54,13 +74,17 @@ func run() error {
 		cfg.AnthropicAPIKey.Reveal(),
 		cfg.MongoURI.Reveal(),
 		cfg.PrivateKeyPEM.Reveal(),
+		cfg.ConsumerSecret.Reveal(),
 	})
 	slog.SetDefault(log)
 
 	log.Info("starting shuriken",
+		slog.String("version", version),
 		slog.String("addr", cfg.Addr),
 		slog.String("model", cfg.Model),
 		slog.String("botHandle", cfg.BotHandle),
+		slog.String("database", cfg.MongoDatabase),
+		slog.Bool("publishing", cfg.ConsumerURL != ""),
 		slog.Bool("dryRun", cfg.DryRun),
 		slog.Int("workers", cfg.Workers),
 		slog.Int("queueSize", cfg.QueueSize))
@@ -105,6 +129,22 @@ func run() error {
 
 	pool := worker.New(cfg.QueueSize, cfg.Workers, cfg.JobTimeout, log)
 	pool.Start(context.Background())
+
+	// The publisher is the only path by which anything outside Shuriken
+	// learns what was recorded, so it runs for the life of the process and
+	// drains the durable outbox rather than being called inline.
+	pub := publisher.New(st, log, publisher.Options{
+		URL:         cfg.ConsumerURL,
+		Secret:      cfg.ConsumerSecret.Reveal(),
+		Interval:    cfg.PublishInterval,
+		Batch:       cfg.PublishBatch,
+		MaxAttempts: cfg.PublishMaxAttempts,
+		Timeout:     cfg.PublishTimeout,
+		DryRun:      cfg.DryRun,
+	})
+	pubCtx, stopPublisher := context.WithCancel(context.Background())
+	defer stopPublisher()
+	go pub.Run(pubCtx)
 
 	reviews := review.NewService(clients, model, st, log, review.Options{
 		BotHandle:         cfg.BotHandle,
@@ -164,6 +204,19 @@ func run() error {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Warn("http shutdown incomplete", slog.Any("error", err))
 	}
+
+	// Stop claiming new outbox batches, then make one last attempt so a clean
+	// restart does not leave events sitting for a full interval. Anything
+	// still unsent stays durable in the outbox.
+	stopPublisher()
+	if pub.Enabled() {
+		if n, err := pub.PublishNow(shutdownCtx); err != nil {
+			log.Warn("final outbox flush incomplete",
+				slog.Int("delivered", n), slog.Any("error", err))
+		} else if n > 0 {
+			log.Info("final outbox flush", slog.Int("delivered", n))
+		}
+	}
 	if err := pool.Shutdown(shutdownCtx); err != nil {
 		log.Warn("worker shutdown incomplete",
 			slog.Int("queued", pool.Depth()), slog.Any("error", err))
@@ -181,6 +234,12 @@ func openStore(ctx context.Context, cfg *config.Config, log *slog.Logger) (store
 			return nil, nil
 		}
 		return nil, errors.New("SHURIKEN_MONGODB_URI is required")
+	}
+	if cfg.ConsumerURL == "" && !cfg.DryRun {
+		// Not fatal: a deployment may legitimately run before any consumer
+		// exists. But events will accumulate in the outbox unseen.
+		log.Warn("no SHURIKEN_CONSUMER_WEBHOOK_URL configured; " +
+			"events will be recorded and queued but never delivered")
 	}
 
 	st, err := mongostore.New(ctx, mongostore.Options{

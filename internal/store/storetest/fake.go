@@ -5,8 +5,8 @@ package storetest
 import (
 	"context"
 	"strconv"
-	"strings"
 	"sync"
+	"time"
 
 	"github.com/sos-academy/shuriken/internal/store"
 )
@@ -25,38 +25,26 @@ type Fake struct {
 	Runs map[string]*store.ReviewRun
 	// Findings saved, in order.
 	Findings []*store.Finding
-	// Users is the GitHub id to platform user mapping.
-	Users map[int64]*store.PlatformUser
-	// UsersByLogin is the lowercased login fallback mapping.
-	UsersByLogin map[string]*store.PlatformUser
-	// Projects maps "owner/name" to a project id.
-	Projects map[string]string
 	// Revealed records ids passed to MarkFindingsRevealed.
 	Revealed []string
+	// Outbound holds everything enqueued for delivery, in order.
+	Outbound []*store.Outbound
 
 	// Err, when set, is returned by every method. For failure-path tests.
 	Err error
 
-	dedupe map[string]bool
+	dedupe     map[string]bool
+	outboxSeen map[string]bool
 }
 
 // New builds an empty Fake.
 func New() *Fake {
 	return &Fake{
-		Deliveries:   map[string]string{},
-		Runs:         map[string]*store.ReviewRun{},
-		Users:        map[int64]*store.PlatformUser{},
-		UsersByLogin: map[string]*store.PlatformUser{},
-		Projects:     map[string]string{},
-		dedupe:       map[string]bool{},
+		Deliveries: map[string]string{},
+		Runs:       map[string]*store.ReviewRun{},
+		dedupe:     map[string]bool{},
+		outboxSeen: map[string]bool{},
 	}
-}
-
-// AddUser registers a linked platform user.
-func (f *Fake) AddUser(id string, githubID int64, login string) {
-	u := &store.PlatformUser{ID: id, GithubID: githubID, GithubLogin: login}
-	f.Users[githubID] = u
-	f.UsersByLogin[strings.ToLower(login)] = u
 }
 
 func (f *Fake) MarkDelivery(_ context.Context, deliveryID, event string) (bool, error) {
@@ -85,30 +73,6 @@ func (f *Fake) RecordActivity(_ context.Context, a *store.Activity) error {
 	copied := *a
 	f.Activities = append(f.Activities, &copied)
 	return nil
-}
-
-func (f *Fake) FindPlatformUser(_ context.Context, githubID int64, login string) (*store.PlatformUser, error) {
-	if f.Err != nil {
-		return nil, f.Err
-	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if u, ok := f.Users[githubID]; ok {
-		return u, nil
-	}
-	if u, ok := f.UsersByLogin[strings.ToLower(login)]; ok {
-		return u, nil
-	}
-	return nil, nil
-}
-
-func (f *Fake) ProjectIDForRepo(_ context.Context, fullName string) (string, error) {
-	if f.Err != nil {
-		return "", f.Err
-	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.Projects[strings.ToLower(fullName)], nil
 }
 
 func (f *Fake) ClaimReviewRun(_ context.Context, run *store.ReviewRun) (bool, error) {
@@ -197,4 +161,119 @@ func (f *Fake) ActivityCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.Activities)
+}
+
+// Enqueue records outbound events, ignoring repeated idempotency keys exactly
+// as the unique index does.
+func (f *Fake) Enqueue(_ context.Context, events []*store.Outbound) error {
+	if f.Err != nil {
+		return f.Err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, e := range events {
+		if f.outboxSeen[e.IdempotencyKey] {
+			continue
+		}
+		f.outboxSeen[e.IdempotencyKey] = true
+		copied := *e
+		if copied.ID == "" {
+			copied.ID = "out-" + strconv.Itoa(len(f.Outbound)+1)
+		}
+		f.Outbound = append(f.Outbound, &copied)
+	}
+	return nil
+}
+
+// ClaimDue returns unpublished, non-dead-lettered events that are due.
+func (f *Fake) ClaimDue(_ context.Context, limit int, _ time.Duration) ([]*store.Outbound, error) {
+	if f.Err != nil {
+		return nil, f.Err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	now := time.Now()
+	var out []*store.Outbound
+	for _, e := range f.Outbound {
+		if len(out) >= limit {
+			break
+		}
+		if e.PublishedAt == nil && e.DeadLetteredAt == nil && !e.NextAttemptAt.After(now) {
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}
+
+// MarkPublished stamps an event as delivered.
+func (f *Fake) MarkPublished(_ context.Context, id string) error {
+	if f.Err != nil {
+		return f.Err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	now := time.Now()
+	for _, e := range f.Outbound {
+		if e.ID == id {
+			e.PublishedAt = &now
+			return nil
+		}
+	}
+	return nil
+}
+
+// MarkFailed increments the attempt count and dead-letters once exhausted.
+func (f *Fake) MarkFailed(_ context.Context, id, cause string, retryAfter time.Duration, maxAttempts int) error {
+	if f.Err != nil {
+		return f.Err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	now := time.Now()
+	for _, e := range f.Outbound {
+		if e.ID != id {
+			continue
+		}
+		e.Attempts++
+		e.LastError = cause
+		e.NextAttemptAt = now.Add(retryAfter)
+		if e.Attempts >= maxAttempts {
+			e.DeadLetteredAt = &now
+		}
+		return nil
+	}
+	return nil
+}
+
+// OutboxDepth counts pending and dead-lettered events.
+func (f *Fake) OutboxDepth(context.Context) (int64, int64, error) {
+	if f.Err != nil {
+		return 0, 0, f.Err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var pending, dead int64
+	for _, e := range f.Outbound {
+		switch {
+		case e.DeadLetteredAt != nil:
+			dead++
+		case e.PublishedAt == nil:
+			pending++
+		}
+	}
+	return pending, dead, nil
+}
+
+// PublishedCount reports how many events were delivered, for assertions.
+func (f *Fake) PublishedCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, e := range f.Outbound {
+		if e.PublishedAt != nil {
+			n++
+		}
+	}
+	return n
 }

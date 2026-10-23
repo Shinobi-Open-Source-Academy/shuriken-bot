@@ -1,19 +1,38 @@
-# Shuriken
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/shuriken-full.png">
+    <source media="(prefers-color-scheme: light)" srcset="assets/shuriken-full-light.png">
+    <img src="assets/shuriken-full-light.png" alt="Shuriken" width="320">
+  </picture>
+</p>
+
+<p align="center">
+  <em>A teaching-first GitHub App for the Shinobi Open Source Academy.</em>
+</p>
+
+---
 
 A GitHub App for **SOS Academy** (Shinobi Open Source Academy) that does two
 things:
 
 1. **Records contributor activity** — issues, pull requests, reviews and
-   mentions — into the academy platform's database, so each contributor's
-   progress can be tracked.
+   mentions — into its own database, and pushes each one to a consumer as a
+   signed webhook event.
 2. **Reviews pull requests with Claude, teaching-first**, when asked. It is a
    mentor, not a linter: it explains the reasoning, names the underlying
    concept, and withholds the patch for conceptual problems so the contributor
    works it out themselves.
 
-Shuriken is separate from **Kunai**, the existing Discord bot. It does not call
-Kunai and Kunai does not call it. The data is stored so Kunai can read it later
-(see [Data model](#data-model)).
+**Shuriken owns its database and shares none of yours.** It holds no
+credential for any consumer's data and stores no platform user id: contributors
+are identified by GitHub id, and the consumer joins that against its own
+records. That is what makes the same deployment usable by a project unrelated
+to SOS Academy. See [ADR 0005](docs/adr/0005-shuriken-owns-its-database.md).
+
+Consumers receive a signed HTTP event per activity; the payload mirrors the
+stored records described under [Data model](#data-model), and the wire format
+is `internal/publisher/event.go`. The full contract is handed to consumers
+directly rather than kept here.
 
 > **v0 scope.** No backfill of history, no ranks or belts, no Kunai
 > integration, no learning from past maintainer reviews, no duplicate-PR
@@ -24,7 +43,9 @@ Kunai and Kunai does not call it. The data is stored so Kunai can read it later
 ## Contents
 
 - [How it behaves](#how-it-behaves)
+- [Reading a real review](#reading-a-real-review)
 - [Quick start](#quick-start)
+- [Shipping to GCP](#shipping-to-gcp)
 - [GitHub App setup](#github-app-setup)
 - [Database setup](#database-setup)
 - [Configuration](#configuration)
@@ -32,6 +53,7 @@ Kunai and Kunai does not call it. The data is stored so Kunai can read it later
 - [Security model](#security-model)
 - [Tuning review quality](#tuning-review-quality)
 - [Architecture](#architecture)
+- [Architecture decisions](#architecture-decisions)
 - [Development](#development)
 - [Operations](#operations)
 
@@ -110,6 +132,38 @@ can never approve a pull request or request changes.
 
 ---
 
+## Reading a real review
+
+Review quality is the one thing the test suite cannot check. Tone, whether the
+concept is named well, whether the patch is rightly withheld — those are only
+knowable by reading the output. So there is a command that reviews a real pull
+request and prints what it would have said:
+
+```bash
+set -a && . ./.env && set +a
+go run ./cmd/shuriken review Shinobi-Open-Source-Academy/shuriken-bot#42
+```
+
+A pull request URL works too. It needs `SHURIKEN_GITHUB_APP_ID`, a private key
+and `ANTHROPIC_API_KEY` — and no webhook, no server, no database, no
+deployment.
+
+**It never posts and never records.** That is not a flag; the command has no
+way to write. The review goes to stdout as Markdown, so it can be read in a
+pager, saved, or diffed between models:
+
+```bash
+go run ./cmd/shuriken review owner/repo#42 > opus.md
+go run ./cmd/shuriken review owner/repo#42 -model claude-sonnet-5-5 > sonnet.md
+diff opus.md sonnet.md
+```
+
+Diagnostics go to stderr, so a redirect captures only the review. `-v` turns
+on the pipeline's own logs, which is how you find out why a pull request was
+skipped.
+
+---
+
 ## Quick start
 
 Nothing is written to GitHub or the database in dry-run mode, so this is safe
@@ -150,6 +204,24 @@ the redelivery dropped.
 
 ---
 
+## Shipping to GCP
+
+Deployment is MongoDB Atlas, Secret Manager, a service account, Workload
+Identity Federation and Cloud Run. The runbook is held by the operator rather
+than committed, since it carries project ids and account names.
+
+Two things in it are easy to get wrong and expensive to debug:
+
+- **Cloud Run needs `--no-cpu-throttling --min-instances=1`.** The outbox
+  publisher is a background goroutine; with CPU throttled between requests or
+  the service scaled to zero it never runs, and the failure is silent —
+  webhooks are accepted and `outboxPending` climbs forever.
+- **Deploy with `SHURIKEN_DRY_RUN=1` first.** Shuriken then reads GitHub and
+  writes nothing: no comments, no reviews, no database. You can read the exact
+  review it *would* post in the logs before a contributor sees it.
+
+---
+
 ## GitHub App setup
 
 ### 1. Create the App
@@ -159,6 +231,9 @@ the redelivery dropped.
 - **Webhook URL**: `https://<your-host>/webhook`
 - **Webhook secret**: generate a long random value, e.g.
   `openssl rand -hex 32`. You need this in both places.
+- **Logo**: upload [`assets/shuriken-avatar.png`](assets/shuriken-avatar.png).
+  This is the avatar on every comment and review Shuriken posts, so it is worth
+  setting before the App is installed anywhere.
 
 ### 2. Permissions — exactly these, nothing more
 
@@ -211,40 +286,24 @@ Shuriken uses the academy platform's **MongoDB** database. It owns four new
 > each migration before you run it.
 
 ```bash
-# 1. Collections (safe, idempotent)
+# 1. Collections (safe, idempotent). Refuses to run if the database contains
+#    anything that is not Shuriken's, as a guard against a wrong URI.
 mongosh "$SHURIKEN_MONGODB_URI" --file migrations/001_shuriken_collections.js
 
 # 2. Indexes (safe, idempotent)
 mongosh "$SHURIKEN_MONGODB_URI" --file migrations/002_shuriken_indexes.js
 
-# 3. OPTIONAL — touches the platform `users` collection. Read it first.
-mongosh "$ADMIN_MONGODB_URI" --file migrations/003_users_githubid_index.js
-
-# 4. Scoped role and database user. Set the password first.
-SHURIKEN_DB_PASSWORD='...' mongosh "$ADMIN_MONGODB_URI" \
-  --file migrations/004_shuriken_role_and_user.js
+# 3. Scoped role and database user. Set the password first.
+SHURIKEN_DB_PASSWORD='...' mongosh "$ADMIN_MONGODB_URI/shuriken" \
+  --file migrations/003_shuriken_db_user.js
 ```
 
-### About migration 003
-
-`apps/server/src/modules/user/schemas/user.schema.ts` declares a unique sparse
-index on `githubProfile.githubId`, but **it was missing from the development
-database** when Shuriken was built — only the `githubProfile.login` index
-existed. Shuriken resolves a GitHub identity to a platform user on
-`githubProfile.githubId` for every recorded activity, so without it each lookup
-is a collection scan.
-
-Two ways to fix it, pick either:
-
-- Run `003`, which first reports any duplicate github ids and refuses to create
-  the index if there are any.
-- **Or** boot the NestJS server once. Mongoose `autoIndex` is not disabled, so
-  it will create the index itself. If you prefer the application to own its own
-  schema, do this and skip `003`.
+The role grants per-collection `find`/`insert`/`update`/index privileges on
+Shuriken's own five collections and **nothing else** — no other database, no
+`drop` of any kind.
 
 For local development only, `SHURIKEN_ENSURE_INDEXES=1` makes Shuriken create
-**its own** indexes at boot. It never creates the `users` index — its database
-role is find-only there.
+its indexes at boot.
 
 ---
 
@@ -283,7 +342,13 @@ run tells you everything that is wrong.
 | `SHURIKEN_MIN_SEVERITY` | `low` | `low`, `medium` or `high` |
 | `SHURIKEN_EXCLUDE_GLOBS` | built-in list | comma-separated; replaces the default |
 | `SHURIKEN_PRICE_*_PER_MTOK` | Opus 5.5 rates | for cost logging only |
-| `SHURIKEN_MONGODB_DATABASE` | `sos-academy` | |
+| `SHURIKEN_MONGODB_DATABASE` | `shuriken` | Shuriken's own database |
+| `SHURIKEN_CONSUMER_WEBHOOK_URL` | *(unset)* | where events are pushed; unset disables publishing |
+| `SHURIKEN_CONSUMER_WEBHOOK_SECRET` | *(unset)* | required when the URL is set |
+| `SHURIKEN_PUBLISH_INTERVAL` | `10s` | outbox drain cadence |
+| `SHURIKEN_PUBLISH_BATCH` | `50` | events per drain |
+| `SHURIKEN_PUBLISH_MAX_ATTEMPTS` | `8` | before dead-lettering |
+| `SHURIKEN_PUBLISH_TIMEOUT` | `15s` | per delivery attempt |
 | `SHURIKEN_DELIVERY_TTL_DAYS` | `30` | delivery-ledger retention |
 | `SHURIKEN_ENSURE_INDEXES` | `0` | local development only |
 | `SHURIKEN_WORKERS` | `4` | worker goroutines |
@@ -296,22 +361,19 @@ run tells you everything that is wrong.
 
 ## Data model
 
-Four new collections in the **same** `sos-academy` database. Same database
-because MongoDB cannot join across databases and Kunai will want to correlate
-with `users`; the `shuriken_` prefix makes ownership obvious and lets the
-database role be scoped per collection.
+Five collections in Shuriken's **own** database. No platform collection is
+read or written, and no document references one.
 
-### What already existed, and is **not** duplicated
+### What is deliberately absent
 
-| Existing field | Shuriken's relationship to it |
+| Field that used to exist | Why it is gone |
 |---|---|
-| `users.githubProfile.{githubId,login}` | **read only** — the identity mapping |
-| `projects.githubRepo` | **read only** — a full URL, normalised to `owner/name` |
-| `users.experiencePoints` | **never written** (ranks are out of v0 scope) |
-| `communitymemberships.contributionScore` | **never written** |
+| `activities.user`, `findings.user` | Shuriken stores no platform user id |
+| `activities.unlinked` | the question it answered is not Shuriken's to ask |
+| `activities.project` | project membership is a consumer concept |
 
-There is no link table. Mapping is a read-only query, and an `unlinked` flag
-lets a later job attach activity to an account.
+Consumers join on `actor.githubId`, which is immutable, against their own
+records. A GitHub account that matches nothing is normal and not an error.
 
 ### `shuriken_activities`
 
@@ -321,11 +383,8 @@ identifiers and URLs only.
 ```js
 {
   dedupeKey, type, occurredAt,
-  actor:   { githubId, login },   // always present
-  user:    ObjectId | null,       // → users
-  unlinked: Boolean,              // true when no platform account matched
+  actor:   { githubId, login },   // the only identity Shuriken holds
   repo:    { owner, name, fullName, githubId },
-  project: ObjectId | null,       // → projects
   subject: { kind, number, githubId, url },
   object:  { githubId, url },     // the comment or review, when distinct
   metadata, deliveryId, createdAt, updatedAt
@@ -353,7 +412,7 @@ delivery id.
 If a delivery fails after the ledger write, the `dedupeKey` index still makes
 GitHub's retry safe.
 
-### `shuriken_review_findings` — the Kunai feed
+### `shuriken_review_findings`
 
 One document per **posted** finding. `concept` and `severity` are the fields to
 aggregate over.
@@ -361,7 +420,6 @@ aggregate over.
 ```js
 {
   actor: { githubId, login },     // the PR author being taught
-  user: ObjectId | null, unlinked,
   repo, pr: { number, githubId, url, headSha },
   reviewId, reviewUrl, commentId,
   concept,                        // "error handling" ← the Kunai key
@@ -371,7 +429,7 @@ aggregate over.
 }
 ```
 
-The query Kunai will want — what this contributor keeps being told:
+The query a consumer wants — what this contributor keeps being told:
 
 ```js
 db.shuriken_review_findings.aggregate([
@@ -413,17 +471,35 @@ an unchanged PR will not re-review it, but a new push will.
 Token and cost figures go to the logs **and** this document. They never appear
 in a pull request comment.
 
-### Unlinked activity is the normal case
+### `shuriken_outbox`
 
-`users.githubProfile` is only populated by GitHub OAuth login. At the time of
-writing, **none** of the users in the development database had one. So:
+The delivery queue. Because a signed webhook is the only path by which anything
+learns what Shuriken recorded, an event lost in flight is lost permanently — so
+events are made durable here in the same operation that records the underlying
+activity, and drained afterwards.
 
-- Activity is always recorded, under `actor.{githubId, login}`.
-- `unlinked: true` and the `unlinked_backlog` index make it findable.
-- Shuriken **never creates platform accounts**.
+```js
+{
+  type,                           // activity.recorded | review.finding_posted
+  idempotencyKey,                 // unique; what the consumer dedupes on
+  payload,                        // the exact bytes that get signed and sent
+  occurredAt,
+  attempts, nextAttemptAt, leasedUntil,
+  publishedAt, deadLetteredAt, lastError, createdAt
+}
+```
 
-Once someone signs in with GitHub, a backfill job can attach their history by
-matching `actor.githubId`. That job is not part of v0.
+`leasedUntil` is how concurrent publishers avoid double-sending; a dead
+publisher's lease simply lapses. Dead-lettered events are kept rather than
+deleted — they are the only record that a consumer never learned something.
+
+### Unmatched contributors are the normal case
+
+A consumer's `githubProfile` is only populated when someone signs in with
+GitHub, so most events will not match a known account early on. That is a
+consumer-side concern now: Shuriken records the GitHub identity unconditionally,
+and retaining `githubId` is what lets a consumer attribute history
+retroactively once someone links their account.
 
 ---
 
@@ -471,14 +547,30 @@ error. Errors stored on a review run are scrubbed again before the write.
 
 ### Database privileges
 
-`migrations/004` creates a `shurikenBot` role with collection-level privileges:
+`migrations/003` creates a `shurikenBot` role scoped to Shuriken's own
+database:
 
-- **read/write** on the four `shuriken_*` collections (no `remove` action)
-- **find only** on `users` and `projects`
-- **no access at all** to anything else
+- **read/write plus index management** on its five collections
+- **no `drop` action** of any kind — the service performs no DDL at runtime
+- **no access to any other database**, so no consumer's user records are
+  reachable even in principle
+
+An earlier revision granted `find` on a platform `users` collection to resolve
+identities. That is gone. It was also a latent exposure: MongoDB has no
+field-level privileges and Mongoose's `select: false` does not apply to the Go
+driver, so that grant could read bcrypt password hashes. Storing GitHub
+identity only removes the grant rather than narrowing it —
+[ADR 0005](docs/adr/0005-shuriken-owns-its-database.md).
 
 ### Residual risks, stated plainly
 
+- **Delivery is at-least-once and eventually consistent.** A consumer's view
+  lags by up to one publish interval, longer while it is down, and duplicates
+  will arrive. Consumers must dedupe on `idempotencyKey`.
+- **A consumer returning `4xx` discards the event permanently.** Shuriken
+  treats any non-429 `4xx` as "this event is unacceptable and resending will
+  not help". A validation bug on the consumer side therefore loses data
+  silently. Alert on `outboxDeadLettered`.
 - **`author_association` as a permission proxy.** `COLLABORATOR` means "has
   been added as a collaborator", which in rare configurations can mean read-only
   access. The practical consequence is that such a person could trigger a
@@ -554,10 +646,18 @@ POST /webhook
   └─ 202 Accepted                            ← GitHub times out slow webhooks
 
 worker pool (N goroutines, per-job context timeout)
-  ├─ record activity ─── map GitHub user → platform user → insert
+  ├─ record activity ─── insert + enqueue outbound event
   └─ review ─── fetch PR → filter diff → build prompt → Claude (tool loop)
                        → post-process → ONE COMMENT review → save findings
+                       → enqueue outbound events
+
+publisher (own goroutine, drains the durable outbox)
+  └─ claim lease → sign → POST to consumer → mark published
+                                           ↘ retry w/ backoff → dead-letter
 ```
+
+Nothing resolves a platform user anywhere in that flow. Shuriken records
+`{githubId, login}`; the consumer joins on it at read time.
 
 ```
 cmd/shuriken/          entry point and wiring
@@ -620,6 +720,24 @@ returns HTTP 400 on current models**, so that cannot work. Instead:
 
 ---
 
+## Architecture decisions
+
+Decisions that were expensive to reach and would be expensive to reverse by
+accident live in [`docs/adr/`](docs/adr/). Start with the index.
+
+| ADR | Question it answers | Status |
+|---|---|---|
+| [0005](docs/adr/0005-shuriken-owns-its-database.md) | Where does Shuriken's data live, and how do consumers get it? | **Accepted** |
+| [0002](docs/adr/0002-shuriken-data-ownership.md) | Should Shuriken own its own database? | Superseded by 0005 |
+| [0003](docs/adr/0003-least-privilege-identity-reads.md) | How little of `users` can Shuriken read? | Superseded by 0005 |
+| [0004](docs/adr/0004-integration-boundary.md) | How do consumers read Shuriken's data? | Superseded by 0005 |
+
+Read **0005** for the current architecture. Reading 0002 through 0005 in order
+shows why the answer changed: 0002 and 0004 were right for a bot serving one
+academy, and intending Shuriken for other projects is what reversed them.
+
+---
+
 ## Development
 
 ```bash
@@ -662,10 +780,28 @@ Table-driven, with the GitHub, Anthropic and store interfaces faked.
 | Malformed output | retried exactly once, then gives up; refusals not retried |
 | Review service | authorization matrix, draft/bot skips, idempotency, dry run, secret redaction |
 | Secret handling | `%v`/`%s`/`%#v`/JSON redaction, scrubbing in messages, attrs, groups, errors |
+| Outbound delivery | signing, at-least-once retry, `429`/`5xx` retry vs `4xx` dead-letter, backoff bounds, idempotency keys, no consumer identity in a payload |
+| MongoDB semantics | unique-index collisions, exclusive outbox leasing under six concurrent publishers, expired-lease reclaim, dead-letter and replay (against a real `mongo:7`) |
 
 The `llm` tests drive the **real** Anthropic SDK against an `httptest` server,
 so the request serialisation — schema placement, cache breakpoint, `strict`,
 `tool_choice` — is asserted on the wire rather than mocked away.
+
+### Integration tests
+
+The outbox lease is what stops two instances delivering the same event, and a
+fake cannot prove `FindOneAndUpdate` is atomic. Those tests need a real
+MongoDB, so they skip unless a URI is supplied:
+
+```bash
+# Skipped by default — plain `go test ./...` needs no database.
+SHURIKEN_TEST_MONGODB_URI=mongodb://localhost:27017 \
+  go test -race -run TestIntegration ./internal/store/mongostore/
+```
+
+Each test creates a uniquely named throwaway database and drops it on cleanup,
+so runs never collide and nothing survives a failure. CI runs them against a
+`mongo:7` service container and fails if any database is left behind.
 
 ### Docker
 
@@ -684,11 +820,17 @@ final image. No shell and no package manager in the runtime image.
 ### Health
 
 ```
-GET /healthz  →  {"status":"ok","queueDepth":0,"dryRun":false}
+GET /healthz  →  {"status":"ok","queueDepth":0,"outboxPending":0,
+                  "outboxDeadLettered":0,"dryRun":false}
 ```
 
 `queueDepth` climbing toward `SHURIKEN_QUEUE_SIZE` means workers are not
 keeping up — raise `SHURIKEN_WORKERS`.
+
+**`outboxDeadLettered > 0` is the one to alert on.** It means a consumer
+rejected events, or was unreachable past the attempt budget, and will never
+learn about them without a replay. `outboxPending` holding steady above zero
+means the consumer is unreachable or publishing is disabled.
 
 ### Backpressure
 

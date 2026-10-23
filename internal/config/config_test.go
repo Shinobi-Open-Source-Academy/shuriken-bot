@@ -15,7 +15,10 @@ func TestSecretNeverRenders(t *testing.T) {
 	for _, got := range []string{
 		s.String(),
 		fmt.Sprintf("%v", s),
-		fmt.Sprintf("%s", s),
+		// Calling String() here would defeat the test: the point is that the
+		// %s verb itself redacts, because that is how a stray log call
+		// formats a secret.
+		fmt.Sprintf("%s", s), //nolint:staticcheck // S1025: verb under test
 		fmt.Sprintf("%q", s.String()),
 		fmt.Sprintf("%#v", s),
 		fmt.Sprintf("%+v", struct{ Token Secret }{s}),
@@ -63,7 +66,7 @@ func TestLoadDefaults(t *testing.T) {
 		{"effort", cfg.Effort, "high"},
 		{"bot handle", cfg.BotHandle, "shuriken-bot"},
 		{"review label", cfg.ReviewLabel, "needs-review"},
-		{"database", cfg.MongoDatabase, "sos-academy"},
+		{"database", cfg.MongoDatabase, "shuriken"},
 		{"min severity", cfg.MinSeverity, "low"},
 		{"min confidence", cfg.MinConfidence, 0.6},
 		{"max inline comments", cfg.MaxInlineComments, 10},
@@ -82,6 +85,66 @@ func TestLoadDefaults(t *testing.T) {
 
 	if len(cfg.ExcludeGlobs) == 0 {
 		t.Error("exclude globs should default to the built-in noise list")
+	}
+	// Publishing is off until a consumer is configured, which is a valid
+	// state for a deployment nobody is consuming yet.
+	if cfg.ConsumerURL != "" {
+		t.Errorf("ConsumerURL = %q, want empty by default", cfg.ConsumerURL)
+	}
+}
+
+// A consumer endpoint without a secret would publish unauthenticated events,
+// which the consumer has no way to trust.
+func TestLoadRequiresConsumerSecretWithURL(t *testing.T) {
+	t.Setenv("SHURIKEN_GITHUB_WEBHOOK_SECRET", "a-webhook-secret")
+	t.Setenv("SHURIKEN_DRY_RUN", "1")
+	t.Setenv("SHURIKEN_CONSUMER_WEBHOOK_URL", "https://platform.example/api/shuriken/events")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected an error for a consumer URL with no secret")
+	}
+	if !strings.Contains(err.Error(), "SHURIKEN_CONSUMER_WEBHOOK_SECRET") {
+		t.Errorf("error should name the missing secret: %v", err)
+	}
+}
+
+func TestLoadRejectsNonHTTPConsumerURL(t *testing.T) {
+	t.Setenv("SHURIKEN_GITHUB_WEBHOOK_SECRET", "a-webhook-secret")
+	t.Setenv("SHURIKEN_DRY_RUN", "1")
+	t.Setenv("SHURIKEN_CONSUMER_WEBHOOK_SECRET", "a-consumer-secret")
+	t.Setenv("SHURIKEN_CONSUMER_WEBHOOK_URL", "platform.example/events")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected an error for a URL with no scheme")
+	}
+	if !strings.Contains(err.Error(), "SHURIKEN_CONSUMER_WEBHOOK_URL") {
+		t.Errorf("error should name the bad URL: %v", err)
+	}
+}
+
+func TestLoadAcceptsConsumerConfig(t *testing.T) {
+	t.Setenv("SHURIKEN_GITHUB_WEBHOOK_SECRET", "a-webhook-secret")
+	t.Setenv("SHURIKEN_DRY_RUN", "1")
+	t.Setenv("SHURIKEN_CONSUMER_WEBHOOK_URL", "https://platform.example/api/shuriken/events")
+	t.Setenv("SHURIKEN_CONSUMER_WEBHOOK_SECRET", "a-consumer-secret")
+	t.Setenv("SHURIKEN_PUBLISH_INTERVAL", "30s")
+	t.Setenv("SHURIKEN_PUBLISH_MAX_ATTEMPTS", "12")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.PublishInterval.Seconds() != 30 {
+		t.Errorf("PublishInterval = %v", cfg.PublishInterval)
+	}
+	if cfg.PublishMaxAttempts != 12 {
+		t.Errorf("PublishMaxAttempts = %d", cfg.PublishMaxAttempts)
+	}
+	// The consumer secret must redact like every other secret.
+	if strings.Contains(fmt.Sprintf("%v", cfg.ConsumerSecret), "a-consumer-secret") {
+		t.Error("consumer secret leaked through formatting")
 	}
 }
 

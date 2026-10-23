@@ -4,7 +4,7 @@
 // re-run; it only errors if an index of the same name exists with different
 // options, which is the signal you want.
 //
-//   mongosh "$MONGODB_URI" --file migrations/002_shuriken_indexes.js
+//   mongosh "$SHURIKEN_MONGODB_URI" --file migrations/002_shuriken_indexes.js
 //
 // Set DELIVERY_TTL_DAYS to match SHURIKEN_DELIVERY_TTL_DAYS if you changed it.
 
@@ -18,15 +18,11 @@ const plan = [
       // arriving under a different delivery id, collides here and is dropped.
       [{ dedupeKey: 1 }, { unique: true, name: 'dedupeKey_unique' }],
 
-      // "What has this contributor done?" keyed by GitHub identity, which
-      // works whether or not they have linked a platform account.
+      // "What has this contributor done?" keyed by GitHub identity, which is
+      // the only identity Shuriken holds. A consumer joins githubId against
+      // its own records at read time.
       [{ 'actor.githubId': 1, occurredAt: -1 }, { name: 'actor_timeline' }],
-
-      // The same question keyed by platform user, for the academy UI.
-      [{ user: 1, occurredAt: -1 }, { sparse: true, name: 'user_timeline' }],
-
-      // Finds activity waiting to be attached to a platform account.
-      [{ unlinked: 1, 'actor.login': 1 }, { name: 'unlinked_backlog' }],
+      [{ 'actor.login': 1, occurredAt: -1 }, { name: 'actor_login_timeline' }],
 
       [{ 'repo.fullName': 1, occurredAt: -1 }, { name: 'repo_timeline' }],
       [{ type: 1, occurredAt: -1 }, { name: 'type_timeline' }],
@@ -35,14 +31,14 @@ const plan = [
   {
     collection: 'shuriken_review_findings',
     indexes: [
-      // The query Kunai will want: which concepts recur for this contributor.
+      // Which concepts recur for this contributor: the question that makes
+      // recurring-feedback tracking possible.
       [{ 'actor.githubId': 1, concept: 1, postedAt: -1 }, { name: 'actor_concepts' }],
-      [{ user: 1, concept: 1, postedAt: -1 }, { sparse: true, name: 'user_concepts' }],
 
       // Loading the latest review on a PR, for the explain command.
       [{ 'pr.githubId': 1, postedAt: -1 }, { name: 'pr_findings' }],
 
-      // Organisation-wide concept trends.
+      // Concept trends across all reviewed repositories.
       [{ concept: 1, postedAt: -1 }, { name: 'concept_trends' }],
 
       [{ commentId: 1 }, { unique: true, sparse: true, name: 'commentId_unique' }],
@@ -60,11 +56,28 @@ const plan = [
     ],
   },
   {
+    collection: 'shuriken_outbox',
+    indexes: [
+      // Makes Enqueue idempotent: a retried job cannot queue the same event
+      // twice, which is what lets the recorder enqueue unconditionally.
+      [{ idempotencyKey: 1 }, { unique: true, name: 'idempotencyKey_unique' }],
+
+      // The publisher's claim query, in its filter order.
+      [
+        { publishedAt: 1, deadLetteredAt: 1, nextAttemptAt: 1 },
+        { name: 'outbox_due' },
+      ],
+
+      // Finding dead-lettered events to inspect or replay.
+      [{ deadLetteredAt: -1 }, { sparse: true, name: 'outbox_dead_letter' }],
+    ],
+  },
+  {
     collection: 'shuriken_deliveries',
     indexes: [
-      // The cheap short-circuit for literal redeliveries. Entries expire so
-      // the ledger does not grow without bound; the dedupeKey index above is
-      // what guarantees correctness after they expire.
+      // The cheap short-circuit for literal GitHub redeliveries. Entries
+      // expire so the ledger does not grow without bound; the dedupeKey index
+      // above is what guarantees correctness after they expire.
       [
         { receivedAt: 1 },
         { expireAfterSeconds: DELIVERY_TTL_DAYS * 24 * 60 * 60, name: 'receivedAt_ttl' },
@@ -73,6 +86,7 @@ const plan = [
   },
 ];
 
+print(`database: ${db.getName()}\n`);
 for (const { collection, indexes } of plan) {
   for (const [keys, options] of indexes) {
     const name = db.getCollection(collection).createIndex(keys, options);

@@ -19,7 +19,7 @@ func Render(files []File) string {
 			b.WriteString(f.PrevPath)
 			b.WriteString(")")
 		}
-		b.WriteString(fmt.Sprintf(" [%s, +%d -%d]\n", f.Status, f.Additions, f.Deletions))
+		fmt.Fprintf(&b, " [%s, +%d -%d]\n", f.Status, f.Additions, f.Deletions)
 		b.WriteString(f.Patch)
 		if !strings.HasSuffix(f.Patch, "\n") {
 			b.WriteString("\n")

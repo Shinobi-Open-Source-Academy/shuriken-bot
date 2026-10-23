@@ -42,10 +42,36 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      - name: Check migration syntax
+        # These are mongosh scripts, never compiled by anything else, so a
+        # syntax error would otherwise surface only when an operator runs one
+        # against a live database.
+        run: |
+          for f in migrations/*.js; do
+            node --check "$f" || { echo "::error file=$f::syntax error"; exit 1; }
+          done
+          echo "✅ $(ls migrations/*.js | wc -l) migration(s) parse"
+
+      # Three constraints have to line up here, and getting any one wrong
+      # fails before a single linter runs:
+      #
+      #   1. .golangci.yml uses the v2 config schema, which needs
+      #      golangci-lint v2. Action v6 was the last major to install v1, and
+      #      its "latest" resolved against the v1 module path (v1.64.8).
+      #   2. golangci-lint refuses to run when the Go version it was BUILT
+      #      with is older than the `go` directive in go.mod. go.mod targets
+      #      1.26.0; v2.14.0's binaries are built with go1.27.0, but v2.6.2's
+      #      were built with go1.25.3 and would fail. Check when bumping:
+      #      `go version $(which golangci-lint)`.
+      #   3. The version is pinned, not `latest`, so a new release adding
+      #      rules cannot fail an unrelated pull request.
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
+          version: v2.14.0
+          # Defaults cap repeats of the same issue at 3, which hides the real
+          # scale of a failure. Report everything.
+          args: --max-same-issues=0 --max-issues-per-linter=0
 
   test:
     name: Test
@@ -64,6 +90,203 @@ jobs:
       - name: Coverage summary
         run: go tool cover -func=coverage.out | tail -1
 
+  integration:
+    name: MongoDB integration
+    runs-on: ubuntu-latest
+    # The outbox lease is what stops two instances delivering the same event.
+    # The in-memory fake can only imitate it, so these tests run against a
+    # real MongoDB: they cover unique-index collisions and the atomicity of
+    # FindOneAndUpdate, neither of which a fake can prove.
+    services:
+      mongo:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.adminCommand(\"ping\").ok'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Run integration tests
+        env:
+          # Setting this is what un-skips them; the plain `test` job above runs
+          # without it so the unit suite needs no database.
+          SHURIKEN_TEST_MONGODB_URI: mongodb://localhost:27017
+        run: |
+          go test -race -run TestIntegration -v ./internal/store/mongostore/ 2>&1 | tee /tmp/it.log
+          echo "--- summary ---"
+          grep -cE '^--- PASS' /tmp/it.log | xargs -I{} echo "{} integration tests passed"
+
+      - name: Each test must drop its own database
+        env:
+          SHURIKEN_TEST_MONGODB_URI: mongodb://localhost:27017
+        run: |
+          # A test that leaks its database would let runs interfere, which
+          # would show up as flakiness rather than a clear failure.
+          leftovers=$(docker exec "$(docker ps -q --filter ancestor=mongo:7)" \
+            mongosh --quiet --eval \
+            'db.getMongo().getDBNames().filter(n => n.startsWith("shuriken_itest_")).join(",")')
+          if [ -n "$leftovers" ]; then
+            echo "::error::integration tests leaked databases: $leftovers"
+            exit 1
+          fi
+          echo "✅ no leaked test databases"
+
+  vuln:
+    name: Vulnerability scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: govulncheck
+        # Reports only vulnerabilities actually reachable from this code, so a
+        # finding here is worth acting on rather than noise from the
+        # dependency tree.
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+  smoke:
+    name: End-to-end smoke
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Build
+        run: go build -o /tmp/shuriken ./cmd/shuriken
+
+      # Unit tests mock the GitHub and Anthropic boundaries, so nothing else
+      # proves the real wiring: HTTP server, signature verification, event
+      # routing, worker dispatch and outbound payload construction. Dry run
+      # exercises all of it without a database, a GitHub App or an API key.
+      - name: Boot in dry-run mode
+        env:
+          SHURIKEN_GITHUB_WEBHOOK_SECRET: ci-smoke-webhook-secret
+          SHURIKEN_CONSUMER_WEBHOOK_URL: http://127.0.0.1:9/unused
+          SHURIKEN_CONSUMER_WEBHOOK_SECRET: ci-smoke-consumer-secret
+          SHURIKEN_DRY_RUN: '1'
+          SHURIKEN_LOG_LEVEL: debug
+          SHURIKEN_ADDR: ':8099'
+        run: |
+          /tmp/shuriken > /tmp/shuriken.log 2>&1 &
+          echo $! > /tmp/shuriken.pid
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:8099/healthz >/dev/null 2>&1 && break
+            sleep 1
+          done
+          curl -sf http://localhost:8099/healthz || {
+            echo "::error::service did not become healthy"; cat /tmp/shuriken.log; exit 1; }
+          echo "✅ healthy: $(curl -s http://localhost:8099/healthz)"
+
+      - name: Reject an unsigned delivery
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8099/webhook \
+            -H 'Content-Type: application/json' -H 'X-GitHub-Event: pull_request' \
+            -H 'X-GitHub-Delivery: smoke-unsigned' --data '{}')
+          [ "$code" = "401" ] || { echo "::error::unsigned delivery returned $code, want 401"; exit 1; }
+          echo "✅ unsigned delivery rejected with 401"
+
+      - name: Reject a SHA-1 signature
+        run: |
+          # Accepting the legacy header would let a caller downgrade us to a
+          # broken MAC, so this must not be treated as merely absent.
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8099/webhook \
+            -H 'Content-Type: application/json' -H 'X-GitHub-Event: pull_request' \
+            -H 'X-GitHub-Delivery: smoke-sha1' \
+            -H 'X-Hub-Signature: sha1=aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d' --data '{}')
+          [ "$code" = "401" ] || { echo "::error::sha1 signature returned $code, want 401"; exit 1; }
+          echo "✅ sha1 signature rejected with 401"
+
+      - name: Accept a signed delivery and build the outbound event
+        env:
+          SECRET: ci-smoke-webhook-secret
+        run: |
+          BODY='{"action":"closed","pull_request":{"id":6001,"number":2,"merged":true,"merged_at":"2026-03-01T12:00:00Z","additions":42,"deletions":7,"user":{"id":101,"login":"alice","type":"User"},"html_url":"https://github.com/o/r/pull/2","created_at":"2026-02-28T09:00:00Z"},"repository":{"id":7001,"name":"r","full_name":"o/r","owner":{"login":"o"}},"installation":{"id":4242}}'
+          # $NF, not $2: some OpenSSL builds print a "SHA2-256(stdin)= " prefix
+          # and some print the bare hex.
+          SIG="sha256=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$SECRET" | awk '{print $NF}')"
+
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8099/webhook \
+            -H 'Content-Type: application/json' -H 'X-GitHub-Event: pull_request' \
+            -H 'X-GitHub-Delivery: smoke-signed' -H "X-Hub-Signature-256: $SIG" --data "$BODY")
+          [ "$code" = "202" ] || { echo "::error::signed delivery returned $code, want 202"; cat /tmp/shuriken.log; exit 1; }
+          echo "✅ signed delivery accepted with 202"
+
+          sleep 3
+          grep -q '"dedupeKey":"pr_merged:6001"' /tmp/shuriken.log || {
+            echo "::error::activity was not normalised to pr_merged:6001"; cat /tmp/shuriken.log; exit 1; }
+          echo "✅ normalised to pr_merged:6001"
+
+          grep -q '"eventType":"activity.recorded"' /tmp/shuriken.log || {
+            echo "::error::no outbound event was built"; cat /tmp/shuriken.log; exit 1; }
+          echo "✅ outbound event built"
+
+          # The whole point of the identity decision: no consumer identity may
+          # appear in a payload. Parsed rather than grepped, because the
+          # payload is JSON escaped inside the log line and a character class
+          # stops at the first escaped quote.
+          python3 - <<'PY'
+          import json, sys
+
+          forbidden = {"userId", "user", "unlinked", "projectId", "project"}
+          checked = 0
+
+          for line in open("/tmp/shuriken.log"):
+              try:
+                  rec = json.loads(line)
+              except ValueError:
+                  continue
+              raw = rec.get("payload")
+              if not raw:
+                  continue
+              payload = json.loads(raw)
+              checked += 1
+              leaked = forbidden & payload.keys()
+              if leaked:
+                  print(f"::error::outbound payload leaked {sorted(leaked)}: {payload}")
+                  sys.exit(1)
+              if "githubId" not in payload.get("actor", {}):
+                  print(f"::error::payload has no actor.githubId to join on: {payload}")
+                  sys.exit(1)
+
+          if checked == 0:
+              print("::error::no outbound payload found in the log to check")
+              sys.exit(1)
+          print(f"✅ {checked} payload(s) carry actor.githubId and no consumer identity")
+          PY
+
+      - name: Shut down cleanly
+        if: always()
+        run: |
+          if [ -f /tmp/shuriken.pid ]; then
+            kill -TERM "$(cat /tmp/shuriken.pid)" 2>/dev/null || true
+            sleep 2
+            grep -q '"msg":"stopped"' /tmp/shuriken.log \
+              && echo "✅ shut down cleanly" \
+              || echo "::warning::no clean-shutdown line in the log"
+          fi
+          echo '--- service log ---'
+          cat /tmp/shuriken.log || true
+
   build:
     name: Build image
     runs-on: ubuntu-latest
@@ -77,6 +300,29 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          # amd64 explicitly: Cloud Run will not run an arm64 image, and
+          # building for the wrong platform is only discovered on deploy.
+          platforms: linux/amd64
           push: false
+          load: true
+          tags: shuriken:ci
           cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-to: type=gha,mode=max,ignore-error=true
+
+      - name: Image runs as non-root and serves /healthz
+        run: |
+          docker run -d --name shuriken-ci -p 8100:8080 \
+            -e SHURIKEN_GITHUB_WEBHOOK_SECRET=ci-image-smoke-secret \
+            -e SHURIKEN_DRY_RUN=1 shuriken:ci
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:8100/healthz >/dev/null 2>&1 && break
+            sleep 1
+          done
+          curl -sf http://localhost:8100/healthz || {
+            echo "::error::image did not become healthy"; docker logs shuriken-ci; exit 1; }
+
+          user=$(docker inspect shuriken-ci --format '{{.Config.User}}')
+          [ "$user" = "nonroot:nonroot" ] || {
+            echo "::error::image runs as '$user', want nonroot:nonroot"; exit 1; }
+          echo "✅ image healthy and running as $user"
+          docker rm -f shuriken-ci
