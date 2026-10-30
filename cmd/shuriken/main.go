@@ -9,8 +9,8 @@
 //
 //	shuriken review <owner>/<repo>#<number>
 //
-// All configuration comes from the environment. See the README for the full
-// list and for the GitHub App setup.
+// All configuration comes from the environment; docs/configuration.md has the
+// full list, and docs/setup.md covers the GitHub App.
 package main
 
 import (

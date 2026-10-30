@@ -115,11 +115,19 @@ func Parse(body, handle string) Parsed {
 func HelpText(handle, word string) string {
 	var b strings.Builder
 	if word != "" {
-		b.WriteString("I don't know `" + word + "`. ")
+		b.WriteString("I don't know `")
+		b.WriteString(word)
+		b.WriteString("`. ")
 	}
 	b.WriteString("I understand:\n\n")
-	b.WriteString("- `@" + handle + " review` — a teaching review of this PR\n")
-	b.WriteString("- `@" + handle + " hint` — a nudge, without the fix\n")
-	b.WriteString("- `@" + handle + " explain` — the full reasoning behind my last review\n")
+	b.WriteString("- `@")
+	b.WriteString(handle)
+	b.WriteString(" review` — a teaching review of this PR\n")
+	b.WriteString("- `@")
+	b.WriteString(handle)
+	b.WriteString(" hint` — a nudge, without the fix\n")
+	b.WriteString("- `@")
+	b.WriteString(handle)
+	b.WriteString(" explain` — the full reasoning behind my last review\n")
 	return b.String()
 }
